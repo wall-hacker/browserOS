@@ -1,0 +1,22 @@
+{
+  "name": "browseros-tv",
+  "version": "0.1.0",
+  "description": "BrowserOS TV for Samsung Tizen TVs: makes any website navigable with the remote. A TizenBrew module.",
+  "packageType": "mods",
+  "appName": "BrowserOS TV",
+  "websiteURL": "http://127.0.0.1:8081/browseros/home",
+  "main": "dist/browseros.js",
+  "keys": [
+    "MediaPlayPause", "MediaPlay", "MediaPause", "MediaStop", "MediaRewind", "MediaFastForward",
+    "ChannelUp", "ChannelDown", "ColorF0Red", "ColorF1Green", "ColorF2Yellow"
+  ],
+  "files": ["dist"],
+  "private": false,
+  "scripts": {
+    "build": "node build.js",
+    "test": "node build.js && node test/run.js"
+  },
+  "devDependencies": {
+    "acorn": "^8.12.1"
+  }
+}
