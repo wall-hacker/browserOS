@@ -1,2 +1,3 @@
 node_modules/
 # dist/ stays in git: TizenBrew loads dist/browseros.js from GitHub through jsDelivr.
+test/.chromium69/

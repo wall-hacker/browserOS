@@ -138,6 +138,7 @@ async function run() {
     dbg.sendCommand('Runtime.evaluate', { expression, contextId: params.context.id }).catch(() => {});
   });
   await dbg.sendCommand('Runtime.enable');
+  await dbg.sendCommand('Debugger.enable'); // TizenBrew enables it too: any `debugger;` statement then freezes the page
 
   const results = [];
   const check = (name, ok, detail) => {

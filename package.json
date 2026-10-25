@@ -1,6 +1,6 @@
 {
   "name": "browseros-tv",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "BrowserOS TV for Samsung Tizen TVs: makes any website navigable with the remote. A TizenBrew module.",
   "packageType": "mods",
   "appName": "BrowserOS TV",

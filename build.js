@@ -8,7 +8,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const ORDER = ['compat.js', 'osk.js', 'store.js', 'page.js', 'shell.js', 'remote.js', 'boot.js'];
+const ORDER = ['defuse.js', 'compat.js', 'osk.js', 'store.js', 'page.js', 'shell.js', 'remote.js', 'boot.js'];
 const SRC = path.join(__dirname, 'src');
 const OUT = path.join(__dirname, 'dist', 'browseros.js');
 

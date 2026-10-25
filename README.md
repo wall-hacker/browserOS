@@ -13,6 +13,9 @@ npm test -- --modern             # keep APIs newer than Chromium 69 (default: hi
 npm test -- --explore=https://example.com/ --keys=ArrowDown*5,ArrowRight*2,Enter --shots=out
 #   --cookie=name=value  set a cookie first    --wait=ms  wait before the first key
 #   CANDIDATES=down      also print what Down would consider from each focus
+
+# load a site in real Chromium 69 attached like TizenBrew (debugger on); see the file for setup
+node test/chromium69.js https://example.com/ --inject --count=a.card --shot=out.png
 ```
 
 The tests use the Electron install and test pages from `../browserOS`, so run `npm install` there first.
@@ -76,6 +79,7 @@ The test harness ([test/harness.js](test/harness.js)) injects the bundle the sam
   - CSS zoom, which old Chromium handles differently; the code measures it, and the harness reports `zoom correction factor`
   - whether `tizen.application` exists on remote pages; if not, Exit shows a hint to use the remote's Exit key
 - **The TV's own keyboard** opens for any focused editable field. To keep only ours, a field is read-only while our keyboard edits it. A field a site focuses by itself is either taken over (right after OK) or let go. Rich editors (`contenteditable`) can't be made read-only, so the TV keyboard may still show there; its Done key submits and Cancel closes it.
+- **Anti-DevTools traps.** TizenBrew attaches to the page with the DevTools protocol, debugger included. Scripts like disable-devtool take that for open DevTools and run a `debugger;` trap. Nothing ever resumes the debugger, so the page freezes. The TV's own browser has no debugger attached, which is why such sites work there. BrowserOS quiets the console methods those detectors probe (`log`, `table`, `clear`, `dir`, …), which defuses them; errors and warnings still get through. A site that runs `debugger;` unconditionally will still freeze. `node test/chromium69.js <url> [--inject]` reproduces this on real Chromium 69.
 - **Anti-bot frames are left alone.** Cloudflare Turnstile, reCAPTCHA and hCaptcha fail when a script runs in their frame. Sites like flystream.net then refuse to play, so the module doesn't run there. If such a check asks for a click, it can't be reached with the remote.
 - **Clicks are synthetic** (`isTrusted: false`). Most sites accept them. Sites that check for trusted events won't react, and `:hover` styles don't show.
 - **Fullscreen and `play()` from forwarded keys.** Chromium 69 grants user activation only to the frame that got the key. Fullscreen or play requested by a different frame may be refused.
