@@ -96,7 +96,7 @@ function startServers() {
       return res.end('<title>AD</title><h1>Congratulations, you won!</h1>');
     }
     const dir = url.pathname === '/remote-test.html' ? ELECTRON_TESTS
-      : url.pathname === '/layout.html' ? path.join(__dirname, 'pages') : STREAMING_DIR;
+      : /^\/(layout|shielded-player)\.html$/.test(url.pathname) ? path.join(__dirname, 'pages') : STREAMING_DIR;
     const file = path.join(dir, path.normalize(url.pathname === '/' ? '/index.html' : url.pathname));
     if (!file.startsWith(dir) || !fs.existsSync(file)) {
       res.writeHead(404);
@@ -169,7 +169,13 @@ async function run() {
       await wait(delay || 450);
       if (process.env.TRACE) {
         const d = await debug();
-        console.log(`   ${name.padEnd(10)} -> ${d.shell || d.mode} ${d.shell ? d.shellFocused : d.focused}`);
+        const f = d.mode === 'frame' && frame() ? await debug(frame()) : null;
+        console.log(`   ${name.padEnd(10)} -> ${d.shell || d.mode} ${d.shell ? d.shellFocused : d.focused}` +
+          `${f ? `   [frame ${f.mode} active=${f.active} ${f.focused} hits=${JSON.stringify(f.hits)}]` : ''}`);
+        if (f && process.env.TRACE === 'candidates') {
+          const list = await evalIn(frame(), 'JSON.stringify([window.__browserOSCandidates(), [...document.querySelectorAll(".controls *")].map((e) => [e.className || e.tagName, getComputedStyle(e).opacity, getComputedStyle(e.parentElement).opacity, JSON.stringify(e.getBoundingClientRect())])])');
+          console.log('     frame candidates:', list);
+        }
       }
     }
   };
@@ -408,6 +414,26 @@ async function run() {
     }
     check('layout: up goes back to page content, not to the fixed header', /#play|#banner/.test(d.focused), d.focused);
     check('layout: it is scrolled out from under the fixed header', d.focusedRect && d.focusedRect.top >= 70, JSON.stringify(d.focusedRect));
+
+    // A player whose controls hide when idle, behind a click shield (like flystream.net's).
+    await load(`${base}/shielded-player.html`);
+    d = await pressUntil('ArrowDown', /button#play/, 3);
+    d = await pressUntil('ArrowRight', /button#fs/, 3);
+    check('player: reaches the fullscreen button', /button#fs/.test(d.focused || ''), d.focused);
+    await press('Enter', 1, 900);
+    check('player: the player went fullscreen', await evalIn(null, '!!document.fullscreenElement'));
+    await wait(2600);
+    check('player: its controls hid when idle', await evalIn(null, 'player.classList.contains("idle")'));
+    await press('Enter', 1, 300);
+    check('player: OK in fullscreen brings the controls back', !(await evalIn(null, 'player.classList.contains("idle")')));
+    await wait(2600);
+    await press('ArrowUp', 1, 700);
+    d = await debug();
+    check('player: up in fullscreen wakes the controls and focuses one', /button#(play|fs)/.test(d.focused || '') &&
+      !(await evalIn(null, 'player.classList.contains("idle")')), d.focused);
+    await press('Back');
+    await press('Back', 1, 800);
+    check('player: Back leaves fullscreen', !(await evalIn(null, '!!document.fullscreenElement')));
   }
 
   // -------------------------------------------------------------- streaming-style site
@@ -551,13 +577,19 @@ async function run() {
     wc.setUserAgent(TIZEN_UA);
     await load(EXPLORE);
     await wait(Number(arg('wait') || 2500)); // let the site's scripts build the page
+    // --cpu=N slows the page's CPU N times, to feel like the TV's ARM chip.
+    if (arg('cpu')) await dbg.sendCommand('Emulation.setCPUThrottlingRate', { rate: Number(arg('cpu')) });
     const steps = (arg('keys') || '').split(',').filter(Boolean);
+    const times = [];
     let n = 0;
     const report = async (label) => {
       const d = await debug();
       const r = d.focusedRect;
-      console.log(`${String(n).padStart(2, '0')} ${label.padEnd(12)} ${d.shell ? 'shell:' + d.shell + ' ' + d.shellFocused : (d.mode || '?') + ' ' + d.focused}` +
-        `${r ? `  @${r.left},${r.top} ${r.width}x${r.height}` : ''}  scrollY=${d.scrollY}  ${wc.getURL()}`);
+      if (n > 0 && typeof d.keyMs === 'number') times.push(d.keyMs);
+      console.log(`${String(n).padStart(2, '0')} ${label.padEnd(12)} ${String(d.keyMs == null ? '' : d.keyMs + 'ms').padStart(6)} ` +
+        `${d.shell ? 'shell:' + d.shell + ' ' + d.shellFocused : (d.mode || '?') + ' ' + (d.focused || '').replace(/\s+/g, ' ').slice(0, 50)}` +
+        `${r ? `  @${r.left},${r.top} ${r.width}x${r.height}` : ''}  scrollY=${d.scrollY}` +
+        `${d.hits && n > 0 ? `  hits grid=${d.hits.grid} click=${d.hits.click} pinned=${d.hits.pinned}` : ''}`);
       if (shots) fs.writeFileSync(path.join(shots, `${String(n).padStart(2, '0')}.png`), (await wc.capturePage()).toPNG());
       if (process.env.CANDIDATES) {
         const list = await evalIn(null, `window.__browserOSCandidates(${JSON.stringify(process.env.CANDIDATES)})`);
@@ -566,12 +598,38 @@ async function run() {
       n++;
     };
     await report('start');
+    // --profile: a CPU profile of the key presses, summed by function (self time).
+    const profile = process.argv.includes('--profile');
+    if (profile) {
+      await dbg.sendCommand('Profiler.enable');
+      await dbg.sendCommand('Profiler.setSamplingInterval', { interval: 200 });
+      await dbg.sendCommand('Profiler.start');
+    }
     for (const step of steps) {
       const m = /^(\w+)(?:\*(\d+))?$/.exec(step);
       for (let i = 0; i < Number(m[2] || 1); i++) {
-        await press(m[1], 1, 600);
+        await press(m[1], 1, Number(arg('delay') || 600));
         await report(m[1]);
       }
+    }
+    if (profile) {
+      const { profile: p } = await dbg.sendCommand('Profiler.stop');
+      const dt = {};
+      p.timeDeltas.forEach((d, i) => { dt[p.samples[i]] = (dt[p.samples[i]] || 0) + d; });
+      const byFn = {};
+      for (const node of p.nodes) {
+        const f = node.callFrame;
+        const key = `${f.functionName || '(anonymous)'} ${f.url ? f.url.split('/').pop().split('?')[0] : '[browserOS]'}:${f.lineNumber}`;
+        byFn[key] = (byFn[key] || 0) + (dt[node.id] || 0);
+      }
+      const top = Object.entries(byFn).filter(([k]) => !/^\((idle|program)\)/.test(k)).sort((a, b) => b[1] - a[1]).slice(0, 25);
+      console.log('self time (ms):');
+      for (const [k, us] of top) console.log(`  ${String(Math.round(us / 1000)).padStart(6)}  ${k}`);
+    }
+    if (times.length) {
+      const sorted = times.slice().sort((a, b) => a - b);
+      const avg = Math.round(times.reduce((s, t) => s + t, 0) / times.length);
+      console.log(`key handling: avg ${avg}ms, median ${sorted[sorted.length >> 1]}ms, max ${sorted[sorted.length - 1]}ms over ${times.length} keys`);
     }
   }
 

@@ -7,11 +7,10 @@ const OSK_CSS = `
   position: fixed; left: 50%; bottom: 2.5vh; transform: translateX(-50%);
   width: 94vw; max-width: 150vh; box-sizing: border-box; padding: 1.6vh 1.6vh 1.2vh;
   border-radius: 2.2vh; background: rgba(18, 21, 30, .97); color: #f4f6fb;
-  box-shadow: 0 2vh 7vh rgba(0, 0, 0, .65), inset 0 0 0 1px rgba(255, 255, 255, .06);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .06);
   font-family: "Samsung One", "SamsungOne", "Segoe UI", Roboto, sans-serif;
-  pointer-events: auto; animation: osk-in .18s ease-out; z-index: 1;
+  pointer-events: auto; z-index: 1;
 }
-@keyframes osk-in { from { opacity: 0; transform: translate(-50%, 3vh); } }
 .osk-preview {
   height: 6.4vh; padding: 0 2.2vh; margin-bottom: .6vh; border-radius: 1.2vh;
   background: rgba(255, 255, 255, .07); font-size: 2.9vh; line-height: 6.4vh;
@@ -20,25 +19,21 @@ const OSK_CSS = `
 .osk-preview.empty { color: rgba(244, 246, 251, .4); }
 .osk-preview::after {
   content: ''; display: inline-block; width: .3vh; height: 3.6vh; margin-left: .3vh;
-  vertical-align: -0.7vh; background: #3d8bff; animation: osk-caret 1s steps(1) infinite;
+  vertical-align: -0.7vh; background: #3d8bff;
 }
 .osk-preview.empty::after { margin: 0 .3vh 0 0; }
-@keyframes osk-caret { 50% { opacity: 0; } }
 .osk-row { display: flex; margin-top: .9vh; }
 .osk-key {
   flex: 1 1 0; min-width: 0; height: 7vh; border-radius: 1.1vh;
   display: flex; align-items: center; justify-content: center;
   background: rgba(255, 255, 255, .09); font-size: 3vh; font-weight: 500;
-  transition: background .08s, transform .08s, color .08s; cursor: pointer; user-select: none;
+  cursor: pointer; user-select: none;
 }
 .osk-key + .osk-key { margin-left: .9vh; }
 .osk-key.fn { background: rgba(255, 255, 255, .16); font-size: 2.3vh; }
 .osk-key.accent { background: #2f6fd6; }
 .osk-key.lit { color: #6fb0ff; }
-.osk-key.on {
-  background: #fff; color: #0b0d12; transform: scale(1.1);
-  box-shadow: 0 .6vh 2.2vh rgba(0, 0, 0, .55); position: relative; z-index: 1;
-}
+.osk-key.on { background: #fff; color: #0b0d12; position: relative; z-index: 1; }
 `;
 
 function oskKey(label, action, w, cls, value) {

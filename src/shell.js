@@ -18,10 +18,8 @@ const SHELL_CSS = `
 .shell[data-mode="search"] .s-search { display: block; }
 .shell svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
-[data-nav] { transition: transform .14s ease, box-shadow .14s ease, background .14s ease; }
 [data-nav].focused {
-  transform: scale(1.06); background: var(--card-hi);
-  box-shadow: 0 0 0 .45vh #fff, 0 2vh 5vh rgba(0, 0, 0, .55); position: relative; z-index: 1;
+  background: var(--card-hi); box-shadow: 0 0 0 .45vh #fff, 0 0 0 .9vh #3d8bff; position: relative; z-index: 1;
 }
 
 .s-home {
@@ -42,7 +40,7 @@ const SHELL_CSS = `
   background: var(--card); color: var(--muted); font-size: 2.6vh;
 }
 .search-pill svg { width: 3.2vh; height: 3.2vh; margin-right: 1.8vh; flex: none; }
-.search-pill.focused { color: var(--text); transform: scale(1.03); }
+.search-pill.focused { color: var(--text); }
 .shell h2 {
   margin: 5vh 0 2.2vh; font-size: 2vh; font-weight: 600; letter-spacing: .14em;
   text-transform: uppercase; color: var(--muted);
@@ -51,7 +49,6 @@ const SHELL_CSS = `
   width: 95vh; max-width: 100%; display: flex; align-items: center;
   padding: 2.2vh 3vh; border-radius: 2.2vh; background: var(--card);
 }
-.continue.focused { transform: scale(1.03); }
 .continue .icon { width: 7.5vh; height: 7.5vh; margin-right: 2.6vh; border-radius: 1.8vh; }
 .continue-text { min-width: 0; }
 .continue-title, .continue-url { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -82,9 +79,7 @@ const SHELL_CSS = `
 
 .s-menu {
   background: linear-gradient(to top, rgba(5, 6, 10, .97) 0%, rgba(5, 6, 10, .88) 34%, rgba(5, 6, 10, 0) 66%);
-  animation: fade-in .16s ease-out;
 }
-@keyframes fade-in { from { opacity: 0; } }
 .menu-panel { position: absolute; left: 6vw; right: 6vw; bottom: 6vh; }
 .menu-info { display: flex; align-items: center; margin-bottom: 3.6vh; }
 .menu-info .icon { width: 6.4vh; height: 6.4vh; margin-right: 2.2vh; border-radius: 1.6vh; }
@@ -103,7 +98,7 @@ const SHELL_CSS = `
 .mi.active { color: #ffd166; }
 .menu-hint { margin-top: 2.6vh; min-height: 2.8vh; font-size: 2.1vh; color: var(--muted); }
 
-.s-search { background: rgba(8, 10, 16, .95); animation: fade-in .16s ease-out; }
+.s-search { background: rgba(8, 10, 16, .95); }
 .search-box { position: absolute; top: 12vh; left: 50%; transform: translateX(-50%); width: 90vw; max-width: 140vh; }
 .search-label { margin-bottom: 1.8vh; font-size: 2.3vh; color: var(--muted); }
 .search-input {
@@ -348,7 +343,7 @@ function setShellFocus(node) {
   cancelRemove();
   if (!node) return;
   node.classList.add('focused');
-  node.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  node.scrollIntoView({ block: 'nearest', behavior: 'instant' });
   if (SH.mode === 'menu') q('.menu-hint').textContent = node.dataset.hint || '';
 }
 

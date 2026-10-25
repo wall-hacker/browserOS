@@ -1,4 +1,4 @@
-// BrowserOS TV 0.1.3 for TizenBrew. Built from src/ by build.js; don't edit.
+// BrowserOS TV 0.1.4 for TizenBrew. Built from src/ by build.js; don't edit.
 (function () {
   'use strict';
   // TizenBrew evaluates the module in every new execution context; run once per document.
@@ -97,13 +97,48 @@ function hasOpenModal() {
   }
 }
 
-function isVisible(el) {
+/**
+ * Style facts about an element and its ancestors, memoised per key press (see
+ * resetStyleCache). Siblings share ancestors, so a page's worth of candidates costs
+ * one getComputedStyle per element instead of one per element per descendant.
+ */
+const styleCache = { faded: new Map(), pinned: new Map() };
+
+function resetStyleCache() {
+  styleCache.faded = new Map();
+  styleCache.pinned = new Map();
+}
+
+/** True when el or one of its ancestors matches test; answers are cached up the chain. */
+function chainHas(el, cache, test, maxDepth) {
+  const chain = [];
+  let result = false;
+  for (let n = el, depth = 0; n && n.nodeType === 1 && depth < maxDepth; n = parentOf(n), depth++) {
+    const known = cache.get(n);
+    if (known !== undefined) {
+      result = known;
+      break;
+    }
+    chain.push(n);
+    if (test(getComputedStyle(n))) {
+      result = true;
+      break;
+    }
+  }
+  // Everything walked lies below where the answer was found, so it shares it.
+  for (const n of chain) cache.set(n, result);
+  return result;
+}
+
+/** fresh: don't use (or fill) the per-key-press cache, for checks made between presses. */
+function isVisible(el, fresh) {
   if (el.checkVisibility) return el.checkVisibility({ checkVisibilityCSS: true, visibilityProperty: true });
   if (getComputedStyle(el).visibility === 'hidden') return false;
-  for (let n = el, depth = 0; n && n.nodeType === 1 && depth < 12; n = parentOf(n), depth++) {
-    if (getComputedStyle(n).opacity === '0') return false;
-  }
-  return true;
+  return !chainHas(el, fresh ? new Map() : styleCache.faded, (s) => s.opacity === '0', 12);
+}
+
+function isPinned(el) {
+  return chainHas(el, styleCache.pinned, (s) => s.position === 'fixed' || s.position === 'sticky', 30);
 }
 
 function post(win, msg) {
@@ -143,11 +178,10 @@ const OSK_CSS = `
   position: fixed; left: 50%; bottom: 2.5vh; transform: translateX(-50%);
   width: 94vw; max-width: 150vh; box-sizing: border-box; padding: 1.6vh 1.6vh 1.2vh;
   border-radius: 2.2vh; background: rgba(18, 21, 30, .97); color: #f4f6fb;
-  box-shadow: 0 2vh 7vh rgba(0, 0, 0, .65), inset 0 0 0 1px rgba(255, 255, 255, .06);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .06);
   font-family: "Samsung One", "SamsungOne", "Segoe UI", Roboto, sans-serif;
-  pointer-events: auto; animation: osk-in .18s ease-out; z-index: 1;
+  pointer-events: auto; z-index: 1;
 }
-@keyframes osk-in { from { opacity: 0; transform: translate(-50%, 3vh); } }
 .osk-preview {
   height: 6.4vh; padding: 0 2.2vh; margin-bottom: .6vh; border-radius: 1.2vh;
   background: rgba(255, 255, 255, .07); font-size: 2.9vh; line-height: 6.4vh;
@@ -156,25 +190,21 @@ const OSK_CSS = `
 .osk-preview.empty { color: rgba(244, 246, 251, .4); }
 .osk-preview::after {
   content: ''; display: inline-block; width: .3vh; height: 3.6vh; margin-left: .3vh;
-  vertical-align: -0.7vh; background: #3d8bff; animation: osk-caret 1s steps(1) infinite;
+  vertical-align: -0.7vh; background: #3d8bff;
 }
 .osk-preview.empty::after { margin: 0 .3vh 0 0; }
-@keyframes osk-caret { 50% { opacity: 0; } }
 .osk-row { display: flex; margin-top: .9vh; }
 .osk-key {
   flex: 1 1 0; min-width: 0; height: 7vh; border-radius: 1.1vh;
   display: flex; align-items: center; justify-content: center;
   background: rgba(255, 255, 255, .09); font-size: 3vh; font-weight: 500;
-  transition: background .08s, transform .08s, color .08s; cursor: pointer; user-select: none;
+  cursor: pointer; user-select: none;
 }
 .osk-key + .osk-key { margin-left: .9vh; }
 .osk-key.fn { background: rgba(255, 255, 255, .16); font-size: 2.3vh; }
 .osk-key.accent { background: #2f6fd6; }
 .osk-key.lit { color: #6fb0ff; }
-.osk-key.on {
-  background: #fff; color: #0b0d12; transform: scale(1.1);
-  box-shadow: 0 .6vh 2.2vh rgba(0, 0, 0, .55); position: relative; z-index: 1;
-}
+.osk-key.on { background: #fff; color: #0b0d12; position: relative; z-index: 1; }
 `;
 
 function oskKey(label, action, w, cls, value) {
@@ -518,7 +548,8 @@ const SELECTOR = [
 ].join(',');
 const TEXT_TYPES = new Set(['', 'text', 'search', 'email', 'url', 'password', 'number', 'tel']);
 const DIRS = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
-const POINTER_GRID = 26; // sample points along the short side of the viewport
+const POINTER_GRID = 12; // sample points along the short side of the viewport
+const POINTER_STEP_MIN = 40; // px between samples, at least
 const FAR_JUMP = 0.8; // targets farther than this × viewport are approached by scrolling
 const REPEAT_MS = 85;
 const SCRUB_STEPS = [10, 10, 10, 20, 30, 30, 60, 60, 90, 120]; // seconds per press while held
@@ -546,6 +577,7 @@ const S = {
   lastKeyAt: 0,
   lastClick: null,
   activatedAt: 0,
+  hits: { grid: 0, click: 0, pinned: 0 },
   guarded: null, // field we made readonly so the TV's own keyboard stays closed
   hovered: null,
   hoverToken: 0,
@@ -678,14 +710,6 @@ function isTextField(el) {
   return false;
 }
 
-function isPinned(el) {
-  for (let n = el, depth = 0; n && n.nodeType === 1 && depth < 30; n = parentOf(n), depth++) {
-    const pos = getComputedStyle(n).position;
-    if (pos === 'fixed' || pos === 'sticky') return true;
-  }
-  return false;
-}
-
 function describe(el) {
   if (!el) return null;
   const id = el.id ? `#${el.id}` : '';
@@ -695,8 +719,8 @@ function describe(el) {
 }
 
 /** A point inside el where a click would actually land on el (not on something covering it). */
-function clickPoint(el) {
-  const r = rectOf(el);
+function clickPoint(el, rect) {
+  const r = rect || rectOf(el);
   const left = Math.max(r.left, 0);
   const right = Math.min(r.right, innerWidth);
   const top = Math.max(r.top, 0);
@@ -704,19 +728,26 @@ function clickPoint(el) {
   if (right - left < 1 || bottom - top < 1) return null;
   const w = right - left;
   const h = bottom - top;
-  const tries = [[0.5, 0.5], [0.25, 0.5], [0.75, 0.5], [0.5, 0.25], [0.5, 0.75], [0.15, 0.15], [0.85, 0.85]];
-  for (const t of tries) {
+  let last = null;
+  for (const t of CLICK_TRIES) {
     const x = left + w * t[0];
     const y = top + h * t[1];
+    S.hits.click++;
     const hit = deepElementFromPoint(x, y);
     if (hit && (contains(el, hit) || contains(hit, el))) return { x, y };
+    if (t === CLICK_TRIES[0]) S.coverHit = hit; // for underPinned, saving it a hit test
+    // The same thing on top twice running: covered whole (a stacked carousel slide), not just a corner.
+    if (hit && hit === last) return null;
+    last = hit;
   }
   return null;
 }
 
+const CLICK_TRIES = [[0.5, 0.5], [0.25, 0.5], [0.75, 0.5], [0.5, 0.25], [0.5, 0.75], [0.15, 0.15], [0.85, 0.85]];
+
 function searchRoots(base) {
   const now = performance.now();
-  if (!S.shadowRoots || now - S.shadowRootsAt > 1500) {
+  if (!S.shadowRoots || now - S.shadowRootsAt > 5000) { // walks every element: not on every press
     const roots = [];
     const queue = [document];
     while (queue.length) {
@@ -742,22 +773,28 @@ function searchRoots(base) {
  * What a remote can reach: real controls (by selector) plus elements made clickable
  * by script, which are only recognisable by looking clickable (cursor: pointer).
  */
-function collect(scope) {
+/** area: limit screen sampling to this part of the viewport (all of it when omitted). */
+function collect(scope, area) {
   const vw = innerWidth;
   const vh = innerHeight;
   const found = new Map();
 
+  // Cheapest checks first: on a TV every getComputedStyle and hit test counts.
   const consider = (el, viaPointer) => {
     if (found.has(el) || el === S.host) return;
-    if (scope && !contains(scope, el)) return;
     const r = rectOf(el);
     if (r.width < 3 || r.height < 3) return;
+    // Only what's within about a screen: a press never reaches further, and the page
+    // scrolls along as focus moves.
+    if (r.bottom < -vh || r.top > 2 * vh || r.right < -vw || r.left > 2 * vw) return;
     const media = el.tagName === 'VIDEO' || el.tagName === 'IFRAME';
     if (!media && r.width * r.height > (viaPointer ? 0.5 : 0.85) * vw * vh) return;
     if (isDisabled(el)) return;
-    if (!isVisible(el)) return;
+    if (scope && !contains(scope, el)) return;
+    if (!isVisible(el)) return; // cached styles: cheaper than the hit tests below
     // Covered by something else, unless it's a fixed bar that scrolling moves it out from under.
-    if (!viaPointer && onScreen(r) && !clickPoint(el) && !underPinned(el, r)) return;
+    S.coverHit = undefined;
+    if (!viaPointer && onScreen(r) && !clickPoint(el, r) && !underPinned(el, r)) return;
     // Off to the side with nothing that scrolls it in (carousels paged by transforms).
     if ((r.right <= 0 || r.left >= vw) && !scrollerFor(parentOf(el), false, r.left >= vw ? 1 : -1)) return;
     found.set(el, { el, r, viaPointer });
@@ -767,11 +804,25 @@ function collect(scope) {
     for (const el of root.querySelectorAll(SELECTOR)) consider(el, false);
   }
 
-  const step = Math.max(28, Math.min(vw, vh) / POINTER_GRID);
+  // Script-clickable elements, found by sampling the screen for cursor: pointer.
+  // Hit tests are the costliest thing here (most of a key press on a big page), so
+  // points inside controls already found are skipped: anything clickable in there is
+  // dropped as a duplicate of that control anyway.
+  const step = Math.max(POINTER_STEP_MIN, Math.min(vw, vh) / POINTER_GRID);
   const seen = new Set();
-  const cursors = new Map();
+  const cursors = cursorCache();
+  const known = [];
+  for (const c of found.values()) if (onScreen(c.r)) known.push(c.r);
+  const isKnown = (x, y) => {
+    for (let i = 0; i < known.length; i++) if (pointInRect(x, y, known[i])) return true;
+    return false;
+  };
+  const a = area || { left: 0, top: 0, right: vw, bottom: vh };
   for (let y = step / 2; y < vh; y += step) {
+    if (y < a.top || y > a.bottom) continue;
     for (let x = step / 2; x < vw; x += step) {
+      if (x < a.left || x > a.right || isKnown(x, y)) continue;
+      S.hits.grid++;
       const hit = deepElementFromPoint(x, y);
       if (!hit || seen.has(hit)) continue;
       seen.add(hit);
@@ -799,8 +850,23 @@ function collect(scope) {
 
 /** el is hidden behind a fixed/sticky element (a header bar), not behind page content. */
 function underPinned(el, r) {
-  const hit = deepElementFromPoint(clamp(cx(r), 0, innerWidth - 1), clamp(cy(r), 0, innerHeight - 1));
+  // clickPoint(el) just failed, and its first try was this centre point: reuse that hit.
+  let hit = S.coverHit;
+  if (hit === undefined) {
+    S.hits.pinned++;
+    hit = deepElementFromPoint(clamp(cx(r), 0, innerWidth - 1), clamp(cy(r), 0, innerHeight - 1));
+  }
   return !!hit && !contains(el, hit) && !contains(hit, el) && isPinned(hit) && !isPinned(el);
+}
+
+/** Computed cursors, kept for a few seconds: they rarely change, and sampling reads hundreds. */
+function cursorCache() {
+  const now = performance.now();
+  if (!S.cursors || now - S.cursorsAt > 4000) {
+    S.cursors = new Map();
+    S.cursorsAt = now;
+  }
+  return S.cursors;
 }
 
 function pointerTarget(hit, cache) {
@@ -952,19 +1018,30 @@ function reenter(dir, from, cands) {
   return findBest(dir, edge, cands.filter((c) => onScreen(c.r) && !isPinned(c.el)), null);
 }
 
+/** The part of the screen a press in dir can land in, from r (generously: rows overlap). */
+function aheadOf(r, dir) {
+  const a = { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
+  if (dir === 'down') a.top = r.top;
+  else if (dir === 'up') a.bottom = r.bottom;
+  else if (dir === 'right') a.left = r.left;
+  else a.right = r.right;
+  return a;
+}
+
 function move(dir) {
   const scope = activeScope();
-  let cands = collect(scope);
-  if (scope && !cands.length) cands = collect(null);
-
   // A dialog that opened since: start inside it, not from what's behind it.
   const current = S.focused && S.focused.isConnected && (!scope || contains(scope, S.focused)) && isVisible(S.focused)
     ? S.focused : null;
   let from = current ? rectOf(current) : scope ? null : S.lastRect;
+  // Only what lies ahead needs sampling for script-clickable elements.
+  const area = from && onScreen(from) ? aheadOf(from, dir) : null;
+  let cands = collect(scope, area);
+  if (scope && !cands.length) cands = collect(null, area);
   if (!from || !onScreen(from)) {
     const pick = (from && reenter(dir, from, cands)) || initialPick(cands, dir);
     if (pick) return focusEl(pick.el);
-    if (!scrollStep(dir)) bump();
+    scrollStep(dir);
     return;
   }
 
@@ -976,14 +1053,14 @@ function move(dir) {
     const player = playerOf(video, cands);
     if (current === video) {
       if (dir === 'down') {
-        hover(video); // wakes auto-hidden controls
+        wakePlayer(video);
         if (player.controls.length) return focusEl(initialPick(player.controls, 'up').el);
       }
     } else {
       const inside = findBest(dir, from, player.controls, current);
       if (inside) return focusEl(inside.el);
       if (dir === 'up') return focusEl(video);
-      if (dir === 'left' || dir === 'right') return bump();
+      if (dir === 'left' || dir === 'right') return; // end of the control bar
       from = player.box;
       cands = cands.filter((c) => player.controls.indexOf(c) < 0 && c.el !== video);
     }
@@ -1005,8 +1082,7 @@ function move(dir) {
   const near = findBest(dir, from, cands.filter((c) => fullyOnScreen(c.r)), current);
   if (near) return focusEl(near.el);
   if (scrollStep(dir)) return;
-  if (best) return focusEl(best.el);
-  bump();
+  if (best) focusEl(best.el);
 }
 
 function focusEl(el) {
@@ -1019,11 +1095,8 @@ function focusEl(el) {
   ensureUI();
   const radius = parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0;
   S.ring.style.borderRadius = `${Math.min(Math.max(radius * S.zoomFix + 4, 6), 40)}px`;
-  S.ring.classList.add('glide');
-  clearTimeout(S.glideTimer);
-  S.glideTimer = setTimeout(() => S.ring.classList.remove('glide'), 220);
 
-  const revealed = isPinned(el) ? false : reveal(el);
+  if (!isPinned(el)) reveal(el);
   if (!isTextField(el) && el.tabIndex >= 0 && typeof el.focus === 'function' && el.tagName !== 'IFRAME') {
     try {
       el.focus({ preventScroll: true });
@@ -1031,14 +1104,22 @@ function focusEl(el) {
   } else if (previous && previous !== el && isTextField(previous)) {
     previous.blur(); // don't leave an autofocused search box swallowing site shortcuts
   }
-  const token = ++S.hoverToken;
-  setTimeout(() => {
-    if (token === S.hoverToken && S.focused === el) hover(el);
-  }, revealed ? 380 : 40);
+  // Hover only where it does something for a remote: it wakes player controls and opens
+  // menus. Elsewhere it starts sites' hover previews (trailers, tooltips), which is slow.
+  if (wantsHover(el)) {
+    const token = ++S.hoverToken;
+    setTimeout(() => {
+      if (token === S.hoverToken && S.focused === el) hover(el);
+    }, 30);
+  }
   raiseOverlay();
 }
 
-/** Scrolls el into a comfortable spot; returns true when it had to scroll. */
+function wantsHover(el) {
+  return el.tagName === 'VIDEO' || el.hasAttribute('aria-haspopup') || !!playerVideoOf(el);
+}
+
+/** Scrolls el into a comfortable spot, at once (smooth scrolling stutters on TVs). */
 function reveal(el) {
   const r = rectOf(el);
   const vw = innerWidth;
@@ -1047,7 +1128,7 @@ function reveal(el) {
   const needX = r.left < vw * 0.04 || r.right > vw * 0.96;
   if (!needY && !needX) return false;
   el.scrollIntoView({
-    behavior: 'smooth',
+    behavior: 'instant', // not the default: sites set scroll-behavior: smooth
     block: needY ? (r.height > vh * 0.7 ? 'start' : 'center') : 'nearest',
     inline: needX ? 'center' : 'nearest',
   });
@@ -1104,7 +1185,7 @@ function scrollStep(dir, amount) {
   const doc = target === docScroller();
   const size = vertical ? (doc ? innerHeight : target.clientHeight) : (doc ? innerWidth : target.clientWidth);
   const delta = Math.round(size * (amount || 0.6)) * sign;
-  const opts = { behavior: 'smooth' };
+  const opts = { behavior: 'instant' }; // not the default: sites set scroll-behavior: smooth
   opts[vertical ? 'top' : 'left'] = delta;
   (doc ? window : target).scrollBy(opts);
   return true;
@@ -1173,6 +1254,16 @@ function hover(el) {
   hoverAt(el, clickPoint(el));
 }
 
+/**
+ * Wakes a player's auto-hidden controls with a mouse move over it. Custom players
+ * (flystream.net's) lay a click shield over the <video>, so the move goes to whatever is
+ * on top in the middle of the picture: that's part of the player, and it bubbles there.
+ */
+function wakePlayer(video) {
+  const r = box(video);
+  hoverAt(video, { x: clamp(cx(r), 1, innerWidth - 2), y: clamp(cy(r), 1, innerHeight - 2) });
+}
+
 function anchorOf(el) {
   for (let n = el; n && n.nodeType === 1; n = parentOf(n)) if (n.tagName === 'A' && n.href) return n;
   return null;
@@ -1199,7 +1290,6 @@ function click(el) {
 }
 
 function activate(el) {
-  flash('press');
   if (isTextField(el)) return startEditing(el, true);
   if (sliderKind(el)) return engage(el);
   if (el.tagName === 'SELECT') return openPicker(el);
@@ -1363,6 +1453,7 @@ function togglePlay(video) {
   } else {
     video.pause();
   }
+  wakePlayer(video);
   toast(video.paused ? '❚❚  Paused' : '▶  Playing');
 }
 
@@ -1385,7 +1476,7 @@ function scrub(video, sign) {
   clearTimeout(sc.timer);
   sc.timer = setTimeout(commitScrub, SCRUB_COMMIT_MS);
   renderScrub();
-  hover(video); // most players show their own controls on mouse movement
+  wakePlayer(video); // most players show their own controls on mouse movement
 }
 
 function commitScrub() {
@@ -1480,6 +1571,7 @@ function playerKey(key) {
   if (!ctx) return false;
   const root = ctx.root;
   const video = ctx.video;
+  wakePlayer(video); // any key shows the player's controls, as a mouse move would
   const inControls = S.focused && S.focused !== video && S.focused.isConnected && (!root || contains(root, S.focused));
   if (inControls) return false;
   switch (key) {
@@ -1494,8 +1586,8 @@ function playerKey(key) {
     case 'ArrowUp':
     case 'ArrowDown': {
       commitScrub();
-      hover(video);
       setTimeout(() => {
+        resetStyleCache(); // the controls were hidden when this key press started
         const controls = collect(root).filter((c) => c.el !== video && !contains(c.el, video));
         const pick = initialPick(controls, 'up'); // controls usually sit along the bottom
         if (pick) focusEl(pick.el);
@@ -1685,13 +1777,12 @@ function startEditing(el, withClick) {
   S.osk = osk;
   setMode('osk');
   updatePreview();
-  setTimeout(() => {
-    const r = rectOf(el);
-    if (!isPinned(el) && (r.bottom > innerHeight * 0.5 || r.top < 0)) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      setTimeout(() => window.scrollBy({ top: -innerHeight * 0.18, behavior: 'smooth' }), 350);
-    }
-  }, 60);
+  // Keep the field visible above the keyboard.
+  const r = rectOf(el);
+  if (!isPinned(el) && (r.bottom > innerHeight * 0.5 || r.top < 0)) {
+    el.scrollIntoView({ behavior: 'instant', block: 'start' });
+    window.scrollBy({ top: -innerHeight * 0.18, behavior: 'instant' });
+  }
 }
 
 function stopEditing() {
@@ -1931,9 +2022,21 @@ function pickerKey(key) {
 const MEDIA_KEYS = { PlayPause: 1, Play: 1, Pause: 1, Stop: 1, Rewind: 1, FastForward: 1 };
 
 function onKey(key, repeat) {
-  const now = performance.now();
-  if (repeat && now - S.lastKeyAt < REPEAT_MS) return;
-  S.lastKeyAt = now;
+  const start = performance.now();
+  // Held keys: a repeat that queued up while the last press was still being handled
+  // (a slow TV) is dropped, or focus keeps running after the key is let go.
+  if (repeat && start - S.lastKeyAt < REPEAT_MS) return;
+  resetStyleCache(); // the page may have changed since the last press
+  S.hits = { grid: 0, click: 0, pinned: 0 }; // hit tests this press, for debugging
+  try {
+    handleKey(key, repeat);
+  } finally {
+    S.lastKeyAt = performance.now();
+    S.lastKeyMs = Math.round(S.lastKeyAt - start);
+  }
+}
+
+function handleKey(key, repeat) {
   S.mouseActive = false;
   ensureUI();
 
@@ -2060,36 +2163,29 @@ function setZoom(delta) {
 
 // ------------------------------------------------------------------ overlay UI
 
+// No transitions or animations: on a TV they cost frames, and the remote should feel instant.
 const UI_CSS = `
 .ring {
   position: fixed; left: 0; top: 0; width: 0; height: 0; box-sizing: border-box;
-  border-radius: 8px; opacity: 0; pointer-events: none; will-change: transform;
-  box-shadow: 0 0 0 3px #fff, 0 0 0 7px #3d8bff, 0 8px 30px 8px rgba(0, 0, 0, .45);
-  transition: opacity .15s;
+  border-radius: 8px; display: none; pointer-events: none; will-change: transform;
+  box-shadow: 0 0 0 3px #fff, 0 0 0 7px #3d8bff;
 }
-.ring.on { opacity: 1; }
-.ring.glide { transition: opacity .15s, transform .16s cubic-bezier(.2, .8, .2, 1),
-  width .16s cubic-bezier(.2, .8, .2, 1), height .16s cubic-bezier(.2, .8, .2, 1); }
-.ring.press { animation: ring-press .22s ease-out; }
-.ring.bump { animation: ring-bump .3s ease-out; }
-@keyframes ring-press { 40% { box-shadow: 0 0 0 3px #fff, 0 0 0 14px #3d8bff, 0 8px 30px 8px rgba(0, 0, 0, .45); } }
-.ring.engaged { box-shadow: 0 0 0 3px #fff, 0 0 0 7px #ffc83d, 0 8px 30px 8px rgba(0, 0, 0, .45); }
-@keyframes ring-bump { 30% { box-shadow: 0 0 0 3px #fff, 0 0 0 7px #ff8a3d, 0 8px 30px 8px rgba(0, 0, 0, .45); } }
+.ring.on { display: block; }
+.ring.engaged { box-shadow: 0 0 0 3px #fff, 0 0 0 7px #ffc83d; }
 .toast {
-  position: fixed; left: 50%; top: 5vh; transform: translate(-50%, -1.5vh);
+  position: fixed; left: 50%; top: 5vh; transform: translateX(-50%);
   padding: 1.4vh 3vh; border-radius: 99px; background: rgba(15, 17, 24, .92); color: #fff;
   font: 600 2.5vh "Samsung One", "SamsungOne", "Segoe UI", Roboto, sans-serif; white-space: nowrap;
-  box-shadow: 0 1vh 4vh rgba(0, 0, 0, .5); opacity: 0; pointer-events: none;
-  transition: opacity .2s, transform .2s; z-index: 3;
+  display: none; pointer-events: none; z-index: 3;
 }
-.toast.on { opacity: 1; transform: translate(-50%, 0); }
+.toast.on { display: block; }
 .scrub {
   position: fixed; left: 5vw; right: 5vw; bottom: 5vh; padding: 2.2vh 2.8vh 2.6vh;
-  border-radius: 2.2vh; background: rgba(12, 14, 20, .9); color: #fff;
-  font-family: "Samsung One", "SamsungOne", "Segoe UI", Roboto, sans-serif; box-shadow: 0 1.5vh 5vh rgba(0, 0, 0, .55);
-  opacity: 0; transform: translateY(2vh); transition: opacity .18s, transform .18s; pointer-events: none;
+  border-radius: 2.2vh; background: rgba(12, 14, 20, .92); color: #fff;
+  font-family: "Samsung One", "SamsungOne", "Segoe UI", Roboto, sans-serif;
+  display: none; pointer-events: none;
 }
-.scrub.on { opacity: 1; transform: none; }
+.scrub.on { display: block; }
 .scrub-head { display: flex; align-items: baseline; margin-bottom: 1.8vh; font-variant-numeric: tabular-nums; }
 .scrub-time { font-size: 3.6vh; font-weight: 700; }
 .scrub-delta { margin-left: 1.6vh; font-size: 2.4vh; font-weight: 600; color: #6fb0ff; }
@@ -2101,8 +2197,7 @@ const UI_CSS = `
 .scrub-span { background: #3d8bff; }
 .scrub-knob {
   position: absolute; top: 50%; width: 2.8vh; height: 2.8vh; margin: -1.4vh 0 0 -1.4vh;
-  border-radius: 50%; background: #fff; box-shadow: 0 0 0 .5vh #3d8bff, 0 .5vh 1.5vh rgba(0, 0, 0, .5);
-  transition: left .12s ease-out;
+  border-radius: 50%; background: #fff; box-shadow: 0 0 0 .5vh #3d8bff;
 }
 .picker {
   position: fixed; top: 0; right: 0; bottom: 0; left: 0; display: flex; align-items: center; justify-content: center;
@@ -2153,7 +2248,6 @@ function ensureUI() {
     S.toastEl = h('div', 'toast');
     S.scrubEl = buildScrubBar();
     shadow.append(S.ring, S.scrubEl, S.toastEl);
-    S.ring.addEventListener('animationend', () => S.ring.classList.remove('press', 'bump'));
     S.host = host;
     S.shadow = shadow;
   }
@@ -2198,17 +2292,6 @@ function raiseOverlay() {
   showOverlay();
 }
 
-function flash(kind) {
-  if (!S.ring) return;
-  S.ring.classList.remove('press', 'bump');
-  void S.ring.offsetWidth;
-  S.ring.classList.add(kind);
-}
-
-function bump() {
-  flash('bump');
-}
-
 function toast(text, ms) {
   if (!ensureUI()) return;
   S.toastEl.textContent = text;
@@ -2228,7 +2311,7 @@ function tick() {
     if (r.width === 0 && r.height === 0) r = null;
     // Hidden since it was focused (a page swapped to a player)? No ring around nothing.
     // Checked every few frames: the fallback walks ancestors' styles.
-    if (r && ++S.visibleTick % 8 === 0) S.focusedVisible = isVisible(el);
+    if (r && ++S.visibleTick % 8 === 0) S.focusedVisible = isVisible(el, true);
     if (r && S.focusedVisible === false) r = null;
   }
   if (!r) {
@@ -2274,10 +2357,8 @@ const SHELL_CSS = `
 .shell[data-mode="search"] .s-search { display: block; }
 .shell svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
-[data-nav] { transition: transform .14s ease, box-shadow .14s ease, background .14s ease; }
 [data-nav].focused {
-  transform: scale(1.06); background: var(--card-hi);
-  box-shadow: 0 0 0 .45vh #fff, 0 2vh 5vh rgba(0, 0, 0, .55); position: relative; z-index: 1;
+  background: var(--card-hi); box-shadow: 0 0 0 .45vh #fff, 0 0 0 .9vh #3d8bff; position: relative; z-index: 1;
 }
 
 .s-home {
@@ -2298,7 +2379,7 @@ const SHELL_CSS = `
   background: var(--card); color: var(--muted); font-size: 2.6vh;
 }
 .search-pill svg { width: 3.2vh; height: 3.2vh; margin-right: 1.8vh; flex: none; }
-.search-pill.focused { color: var(--text); transform: scale(1.03); }
+.search-pill.focused { color: var(--text); }
 .shell h2 {
   margin: 5vh 0 2.2vh; font-size: 2vh; font-weight: 600; letter-spacing: .14em;
   text-transform: uppercase; color: var(--muted);
@@ -2307,7 +2388,6 @@ const SHELL_CSS = `
   width: 95vh; max-width: 100%; display: flex; align-items: center;
   padding: 2.2vh 3vh; border-radius: 2.2vh; background: var(--card);
 }
-.continue.focused { transform: scale(1.03); }
 .continue .icon { width: 7.5vh; height: 7.5vh; margin-right: 2.6vh; border-radius: 1.8vh; }
 .continue-text { min-width: 0; }
 .continue-title, .continue-url { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -2338,9 +2418,7 @@ const SHELL_CSS = `
 
 .s-menu {
   background: linear-gradient(to top, rgba(5, 6, 10, .97) 0%, rgba(5, 6, 10, .88) 34%, rgba(5, 6, 10, 0) 66%);
-  animation: fade-in .16s ease-out;
 }
-@keyframes fade-in { from { opacity: 0; } }
 .menu-panel { position: absolute; left: 6vw; right: 6vw; bottom: 6vh; }
 .menu-info { display: flex; align-items: center; margin-bottom: 3.6vh; }
 .menu-info .icon { width: 6.4vh; height: 6.4vh; margin-right: 2.2vh; border-radius: 1.6vh; }
@@ -2359,7 +2437,7 @@ const SHELL_CSS = `
 .mi.active { color: #ffd166; }
 .menu-hint { margin-top: 2.6vh; min-height: 2.8vh; font-size: 2.1vh; color: var(--muted); }
 
-.s-search { background: rgba(8, 10, 16, .95); animation: fade-in .16s ease-out; }
+.s-search { background: rgba(8, 10, 16, .95); }
 .search-box { position: absolute; top: 12vh; left: 50%; transform: translateX(-50%); width: 90vw; max-width: 140vh; }
 .search-label { margin-bottom: 1.8vh; font-size: 2.3vh; color: var(--muted); }
 .search-input {
@@ -2604,7 +2682,7 @@ function setShellFocus(node) {
   cancelRemove();
   if (!node) return;
   node.classList.add('focused');
-  node.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  node.scrollIntoView({ block: 'nearest', behavior: 'instant' });
   if (SH.mode === 'menu') q('.menu-hint').textContent = node.dataset.hint || '';
 }
 
@@ -3195,6 +3273,8 @@ window.__browserOSDebug = () => {
     picker: !!S.picker,
     scrubbing: !!S.scrub,
     inFrame: !!S.inFrame,
+    keyMs: S.lastKeyMs, // how long the last key took to handle
+    hits: S.hits, // and the hit tests it made
     zoom: S.zoom,
     zoomFix: S.zoomFix,
     favorites: IS_HOME ? SH.favorites.map((f) => f.url) : knownFavorites().map((f) => f.url),

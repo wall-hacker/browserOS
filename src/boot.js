@@ -65,6 +65,8 @@ window.__browserOSDebug = () => {
     picker: !!S.picker,
     scrubbing: !!S.scrub,
     inFrame: !!S.inFrame,
+    keyMs: S.lastKeyMs, // how long the last key took to handle
+    hits: S.hits, // and the hit tests it made
     zoom: S.zoom,
     zoomFix: S.zoomFix,
     favorites: IS_HOME ? SH.favorites.map((f) => f.url) : knownFavorites().map((f) => f.url),

@@ -67,13 +67,48 @@ function hasOpenModal() {
   }
 }
 
-function isVisible(el) {
+/**
+ * Style facts about an element and its ancestors, memoised per key press (see
+ * resetStyleCache). Siblings share ancestors, so a page's worth of candidates costs
+ * one getComputedStyle per element instead of one per element per descendant.
+ */
+const styleCache = { faded: new Map(), pinned: new Map() };
+
+function resetStyleCache() {
+  styleCache.faded = new Map();
+  styleCache.pinned = new Map();
+}
+
+/** True when el or one of its ancestors matches test; answers are cached up the chain. */
+function chainHas(el, cache, test, maxDepth) {
+  const chain = [];
+  let result = false;
+  for (let n = el, depth = 0; n && n.nodeType === 1 && depth < maxDepth; n = parentOf(n), depth++) {
+    const known = cache.get(n);
+    if (known !== undefined) {
+      result = known;
+      break;
+    }
+    chain.push(n);
+    if (test(getComputedStyle(n))) {
+      result = true;
+      break;
+    }
+  }
+  // Everything walked lies below where the answer was found, so it shares it.
+  for (const n of chain) cache.set(n, result);
+  return result;
+}
+
+/** fresh: don't use (or fill) the per-key-press cache, for checks made between presses. */
+function isVisible(el, fresh) {
   if (el.checkVisibility) return el.checkVisibility({ checkVisibilityCSS: true, visibilityProperty: true });
   if (getComputedStyle(el).visibility === 'hidden') return false;
-  for (let n = el, depth = 0; n && n.nodeType === 1 && depth < 12; n = parentOf(n), depth++) {
-    if (getComputedStyle(n).opacity === '0') return false;
-  }
-  return true;
+  return !chainHas(el, fresh ? new Map() : styleCache.faded, (s) => s.opacity === '0', 12);
+}
+
+function isPinned(el) {
+  return chainHas(el, styleCache.pinned, (s) => s.position === 'fixed' || s.position === 'sticky', 30);
 }
 
 function post(win, msg) {

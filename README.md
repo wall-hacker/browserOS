@@ -13,6 +13,8 @@ npm test -- --modern             # keep APIs newer than Chromium 69 (default: hi
 npm test -- --explore=https://example.com/ --keys=ArrowDown*5,ArrowRight*2,Enter --shots=out
 #   --cookie=name=value  set a cookie first    --wait=ms  wait before the first key
 #   CANDIDATES=down      also print what Down would consider from each focus
+#   --cpu=6              slow the page's CPU 6x (roughly the TV); each line shows the key's handling
+#                        time and hit tests, and a summary follows. --profile adds a CPU profile.
 
 # load a site in real Chromium 69 attached like TizenBrew (debugger on); see the file for setup
 node test/chromium69.js https://example.com/ --inject --count=a.card --shot=out.png
@@ -69,6 +71,8 @@ TizenBrew opens `websiteURL` in its own app window, connects to it with the DevT
   - `window.name` survives cross-site navigation, so it carries pins and the "Continue" page between sites and the home page.
   - Zoom and key mode are stored in each site's own `localStorage`.
 - **[src/compat.js](src/compat.js)**: replacements for APIs Chromium 69 doesn't have: popover, constructed stylesheets, `replaceChildren`, unprefixed fullscreen, `:modal` and `checkVisibility`. The CSS also avoids flex `gap`, `inset` and `min()`.
+
+**Speed.** A TV's CPU is several times slower than a PC's, and almost all of a key press goes into hit tests (`elementFromPoint`). So candidates come from about a screen around the viewport only, cheap checks run first, styles are cached per press, and the screen sampling for script-clickable elements only covers the direction of the press and skips areas already known. Scrolling is instant, and nothing animates. On flystream.net at 6× CPU throttling a press takes about 60ms (it was about 570ms).
 
 The test harness ([test/harness.js](test/harness.js)) injects the bundle the same way TizenBrew does, with site isolation off as on the TV. It sends trusted DevTools key events with Tizen key codes, and by default removes the newer APIs first so the fallbacks are what gets tested.
 
