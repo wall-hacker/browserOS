@@ -1,4 +1,4 @@
-// BrowserOS TV 0.1.0 for TizenBrew. Built from src/ by build.js; don't edit.
+// BrowserOS TV 0.1.1 for TizenBrew. Built from src/ by build.js; don't edit.
 (function () {
   'use strict';
   // TizenBrew evaluates the module in every new execution context; run once per document.
@@ -517,6 +517,8 @@ const S = {
   synthMouseUntil: 0,
   lastKeyAt: 0,
   lastClick: null,
+  activatedAt: 0,
+  guarded: null, // field we made readonly so the TV's own keyboard stays closed
   hovered: null,
   hoverToken: 0,
   zoom: 1,
@@ -1122,17 +1124,10 @@ function activate(el) {
     const r = rectOf(el);
     if (r.width * r.height >= PLAYER_FRAME_SHARE * innerWidth * innerHeight) return enterFrame(el);
   }
+  // Search buttons often reveal and focus a text box: the focusin handler offers the
+  // keyboard for a field focused this soon after OK.
+  S.activatedAt = Date.now();
   click(el);
-  // Search buttons often reveal and focus a text box: offer the keyboard right away.
-  const offerKeyboard = () => {
-    const active = deepActiveElement();
-    if (!S.osk && S.focused === el && active && active !== el && isTextField(active) && onScreen(rectOf(active))) {
-      focusEl(active);
-      startEditing(active, false);
-    }
-  };
-  setTimeout(offerKeyboard, 150);
-  setTimeout(offerKeyboard, 500);
 }
 
 // ------------------------------------------------------------------ links and pop-ups
@@ -1573,11 +1568,29 @@ function enterLabel(el) {
   return 'Go';
 }
 
+/**
+ * Tizen opens its own on-screen keyboard for any focused editable field, on top of ours.
+ * Read-only fields don't get it, so a field stays read-only while our keyboard edits it;
+ * edits set the value directly, which read-only doesn't block.
+ */
+function guard(el) {
+  if ((el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') || el.readOnly) return;
+  el.readOnly = true;
+  S.guarded = el;
+}
+
+function unguard() {
+  const el = S.guarded;
+  S.guarded = null;
+  if (el) el.readOnly = false;
+}
+
 function startEditing(el, withClick) {
+  stopEditing();
+  guard(el);
   if (withClick) click(el);
   el.focus({ preventScroll: true });
   ensureUI();
-  stopEditing();
   const type = (el.getAttribute('type') || '').toLowerCase();
   const kind = type === 'email' ? 'email'
     : type === 'url' ? 'url'
@@ -1599,9 +1612,13 @@ function startEditing(el, withClick) {
 
 function stopEditing() {
   if (!S.osk) return;
+  const el = S.editing;
   S.osk.destroy();
   S.osk = null;
   S.editing = null;
+  // Leave the field before it becomes editable again, or the TV's keyboard opens for it.
+  if (el && el === S.guarded && deepActiveElement() === el) el.blur();
+  unguard();
   restMode();
 }
 
@@ -1611,11 +1628,17 @@ function editTarget() {
   return el;
 }
 
-function setNativeValue(el, value) {
+function setNativeValue(el, value, inputType, data) {
   const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
   // The prototype setter, so frameworks that wrap .value (React) notice the change.
   Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
-  el.dispatchEvent(new Event('input', { bubbles: true }));
+  let event;
+  try {
+    event = new InputEvent('input', { bubbles: true, inputType: inputType || 'insertText', data: data == null ? null : data });
+  } catch (e) {
+    event = new Event('input', { bubbles: true });
+  }
+  el.dispatchEvent(event);
 }
 
 function selection(el) {
@@ -1625,28 +1648,31 @@ function selection(el) {
   return [el.value.length, el.value.length];
 }
 
-/** Edits through execCommand, which fires real input events; value-setting as a fallback. */
+/** Replaces the selection with text (or deletes the character before the caret). */
+function replaceSelection(el, text, deleteBack) {
+  const sel = selection(el);
+  const from = deleteBack && sel[0] === sel[1] ? Math.max(0, sel[0] - 1) : sel[0];
+  let insert = text;
+  if (el.maxLength > 0) insert = insert.slice(0, Math.max(0, el.maxLength - (el.value.length - (sel[1] - from))));
+  if (!insert && !deleteBack) return;
+  setNativeValue(el, el.value.slice(0, from) + insert + el.value.slice(sel[1]), insert ? 'insertText' : 'deleteContentBackward', insert || null);
+  try {
+    el.setSelectionRange(from + insert.length, from + insert.length);
+  } catch (e) { /* no caret in this input type */ }
+}
+
 function editText(action, text) {
   const el = editTarget();
   if (!el) return;
-  if (action === 'insert') {
-    if (document.execCommand('insertText', false, text) || el.isContentEditable) return;
-    const sel = selection(el);
-    setNativeValue(el, el.value.slice(0, sel[0]) + text + el.value.slice(sel[1]));
-  } else if (action === 'delete') {
-    if (document.execCommand('delete', false) || el.isContentEditable) return;
-    const sel = selection(el);
-    const from = sel[0] === sel[1] ? Math.max(0, sel[0] - 1) : sel[0];
-    setNativeValue(el, el.value.slice(0, from) + el.value.slice(sel[1]));
-  } else if (action === 'clear') {
-    if (el.isContentEditable) {
-      window.getSelection().selectAllChildren(el);
-      document.execCommand('delete', false);
-      return;
-    }
-    el.select();
-    if (!document.execCommand('delete', false) || el.value) setNativeValue(el, '');
+  if (el.isContentEditable) {
+    // Rich editors need execCommand. They can't be made read-only, so the TV's keyboard may show.
+    if (action === 'clear') window.getSelection().selectAllChildren(el);
+    document.execCommand(action === 'insert' ? 'insertText' : 'delete', false, text);
+    return;
   }
+  if (action === 'insert') replaceSelection(el, text, false);
+  else if (action === 'delete') replaceSelection(el, '', true);
+  else if (action === 'clear') setNativeValue(el, '', 'deleteContent');
 }
 
 function moveCaret(sign) {
@@ -1678,11 +1704,23 @@ function submitForm(form) {
 function pressEnter() {
   const el = editTarget();
   if (!el) return;
-  if (el.tagName === 'TEXTAREA' || el.isContentEditable) {
-    if (sendKey(el, 'Enter')) document.execCommand(el.isContentEditable ? 'insertParagraph' : 'insertText', false, '\n');
+  if (el.isContentEditable) {
+    if (sendKey(el, 'Enter')) document.execCommand('insertParagraph', false);
+    return;
+  }
+  if (el.tagName === 'TEXTAREA') {
+    if (sendKey(el, 'Enter')) replaceSelection(el, '\n', false);
     return;
   }
   if (sendKey(el, 'Enter') && el.form) submitForm(el.form);
+}
+
+/** The TV's keyboard, if it does open (e.g. for a rich editor): Done submits, Cancel closes it. */
+function imeKey(done) {
+  const el = deepActiveElement();
+  if (!el || !(isTextField(el) || el === S.guarded)) return;
+  if (done && el.tagName === 'INPUT' && sendKey(el, 'Enter') && el.form) submitForm(el.form);
+  el.blur();
 }
 
 function onKeyboardKey(action, value) {
@@ -1855,9 +1893,20 @@ window.addEventListener('mousemove', (e) => {
 
 document.addEventListener('focusin', () => {
   const active = deepActiveElement();
-  if (S.mouseActive && !S.osk && isTextField(active)) {
+  if (S.osk || !isTextField(active)) return;
+  if (S.mouseActive) {
     S.typing = active;
     restMode();
+    return;
+  }
+  if (S.mode === 'passthrough' || S.shell) return; // the site drives itself
+  // The site focused a field by itself, and the TV opens its keyboard for any focused
+  // field. Right after OK (a search icon revealing a box) offer ours; otherwise let go.
+  if (Date.now() - S.activatedAt < 1000 && onScreen(rectOf(active))) {
+    focusEl(active);
+    startEditing(active, false);
+  } else {
+    active.blur();
   }
 }, true);
 
@@ -2342,6 +2391,7 @@ function buildShell() {
   input.type = 'text';
   input.spellcheck = false;
   input.autocomplete = 'off';
+  input.readOnly = true; // typed with our keyboard only; read-only keeps the TV's own keyboard away
   sbox.append(h('div', 'search-label'), input);
   search.append(sbox, h('div', 'osk-host'));
 
@@ -2576,13 +2626,17 @@ function onShellKeyboardKey(action, value) {
   const input = q('.search-input');
   const start = input.selectionStart;
   const end = input.selectionEnd;
+  const edit = (from, to, text) => {
+    input.value = input.value.slice(0, from) + text + input.value.slice(to);
+    input.setSelectionRange(from + text.length, from + text.length);
+  };
   switch (action) {
     case 'char':
-      input.setRangeText(value, start, end, 'end');
+      edit(start, end, value);
       break;
     case 'backspace':
-      if (start !== end) input.setRangeText('', start, end, 'end');
-      else if (start > 0) input.setRangeText('', start - 1, start, 'end');
+      if (start !== end) edit(start, end, '');
+      else if (start > 0) edit(start - 1, start, '');
       break;
     case 'clear':
       input.value = '';
@@ -2807,6 +2861,8 @@ const KEY_CODES = {
 const SHELL_KEYS = { Menu: 1, Home: 1, Address: 1 }; // always handled by the top frame
 const ALWAYS_TAKEN = { Back: 1, Menu: 1, Home: 1, Address: 1 }; // even in "Keys: Site" mode
 const BACK_HOLD_MS = 700;
+const IME_DONE = 65376; // the TV's own keyboard: Done / Cancel
+const IME_CANCEL = 65385;
 
 const R = {
   down: {}, // keyCode -> name, for keys currently held
@@ -2832,6 +2888,7 @@ function nameFor(e, mode) {
 
 function onKeyDown(e) {
   if (!e.isTrusted) return; // our own synthetic keys
+  if (e.keyCode === IME_DONE || e.keyCode === IME_CANCEL) return imeKey(e.keyCode === IME_DONE);
   const mode = keyMode();
   const name = nameFor(e, mode);
   if (!name) return;
@@ -3000,6 +3057,7 @@ window.__browserOSDebug = () => {
     active: S.active,
     shell: S.shell,
     shellFocused: SH.focused && SH.focused.dataset.id,
+    address: SH.root ? q('.search-input').value : null,
     focused: describe(S.focused),
     focusedRect: S.focused && S.focused.isConnected ? debugRect(rectOf(S.focused)) : null,
     ringRect: S.ringShown ? debugRect(S.ring.getBoundingClientRect()) : null,

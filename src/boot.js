@@ -40,6 +40,7 @@ window.__browserOSDebug = () => {
     active: S.active,
     shell: S.shell,
     shellFocused: SH.focused && SH.focused.dataset.id,
+    address: SH.root ? q('.search-input').value : null,
     focused: describe(S.focused),
     focusedRect: S.focused && S.focused.isConnected ? debugRect(rectOf(S.focused)) : null,
     ringRect: S.ringShown ? debugRect(S.ring.getBoundingClientRect()) : null,

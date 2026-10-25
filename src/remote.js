@@ -17,6 +17,8 @@ const KEY_CODES = {
 const SHELL_KEYS = { Menu: 1, Home: 1, Address: 1 }; // always handled by the top frame
 const ALWAYS_TAKEN = { Back: 1, Menu: 1, Home: 1, Address: 1 }; // even in "Keys: Site" mode
 const BACK_HOLD_MS = 700;
+const IME_DONE = 65376; // the TV's own keyboard: Done / Cancel
+const IME_CANCEL = 65385;
 
 const R = {
   down: {}, // keyCode -> name, for keys currently held
@@ -42,6 +44,7 @@ function nameFor(e, mode) {
 
 function onKeyDown(e) {
   if (!e.isTrusted) return; // our own synthetic keys
+  if (e.keyCode === IME_DONE || e.keyCode === IME_CANCEL) return imeKey(e.keyCode === IME_DONE);
   const mode = keyMode();
   const name = nameFor(e, mode);
   if (!name) return;

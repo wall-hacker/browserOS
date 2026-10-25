@@ -70,6 +70,7 @@ The test harness ([test/harness.js](test/harness.js)) injects the bundle the sam
   - whether key-ups arrive (the long-press gestures need them; without them, Back acts on key-down and the menu is on Red)
   - CSS zoom, which old Chromium handles differently; the code measures it, and the harness reports `zoom correction factor`
   - whether `tizen.application` exists on remote pages; if not, Exit shows a hint to use the remote's Exit key
+- **The TV's own keyboard** opens for any focused editable field. To keep only ours, a field is read-only while our keyboard edits it. A field a site focuses by itself is either taken over (right after OK) or let go. Rich editors (`contenteditable`) can't be made read-only, so the TV keyboard may still show there; its Done key submits and Cancel closes it.
 - **Clicks are synthetic** (`isTrusted: false`). Most sites accept them. Sites that check for trusted events won't react, and `:hover` styles don't show.
 - **Fullscreen and `play()` from forwarded keys.** Chromium 69 grants user activation only to the frame that got the key. Fullscreen or play requested by a different frame may be refused.
 - **No error page** when a site fails to load, and no new windows: pop-ups and new tabs open in place, so sign-in flows that need `window.opener` won't complete.

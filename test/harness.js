@@ -220,6 +220,7 @@ async function run() {
     check('OK on a text field opens the keyboard', d.osk && d.mode === 'osk', `mode=${d.mode}`);
     const kb = d.oskRect || {};
     check('the keyboard is styled (wide, along the bottom)', kb.width > 900 && kb.top > 300, JSON.stringify(kb));
+    check('the field is read-only while ours is open (no TV keyboard)', await evalIn(null, 'document.getElementById("q").readOnly'));
     await press('Enter'); // keyboard starts on "q"
     await press('ArrowRight');
     await press('Enter'); // "w"
@@ -230,6 +231,13 @@ async function run() {
     await press('Enter', 1, 600);
     d = await debug();
     check('Search key submits and closes the keyboard', /submit q=qw/.test(await pageLog()) && !d.osk, `osk=${d.osk}`);
+    const after = await evalIn(null, '[document.getElementById("q").readOnly, document.activeElement && document.activeElement.id]');
+    check('afterwards the field is editable again and no longer focused', after[0] === false && after[1] !== 'q', JSON.stringify(after));
+    await evalIn(null, 'document.getElementById("q").focus()');
+    await wait(200);
+    d = await debug();
+    const active = await evalIn(null, 'document.activeElement && document.activeElement.id');
+    check('a field the site focuses by itself is let go (no TV keyboard)', active !== 'q' && !d.osk, `active=${active} osk=${d.osk}`);
 
     d = await pressUntil('ArrowRight', /select#sel/, 3);
     check('right reaches the select', /select#sel/.test(d.focused), d.focused);
@@ -277,6 +285,27 @@ async function run() {
     await press('Back');
     d = await debug();
     check('home: Back closes the menu', d.shell === 'home', d.shell);
+    // The Add tile starts the last grid row: down until focus stops moving, then left.
+    for (let i = 0, last = null; i < 4; i++) {
+      const id = (await debug()).shellFocused;
+      if (id === last || id === 'add') break;
+      last = id;
+      await press('ArrowDown', 1, 300);
+    }
+    for (let i = 0; i < 6 && (await debug()).shellFocused !== 'add'; i++) await press('ArrowLeft', 1, 200);
+    d = await debug();
+    check('home: down reaches the "Add site" tile', d.shellFocused === 'add', d.shellFocused);
+    await press('Enter', 1, 600);
+    d = await debug();
+    check('home: "Add site" opens the address screen', d.shell === 'search', d.shell);
+    await press('Enter'); // the keyboard starts on "q"
+    d = await debug();
+    check('home: our keyboard types into the address box', d.address === 'q', JSON.stringify(d.address));
+    await press('ArrowDown');
+    await press('ArrowRight', 10, 120); // along the "a s d ..." row to its Add key
+    await press('Enter', 1, 600);
+    d = await debug();
+    check('home: the Add (Go) key adds the site', d.shell === 'home' && d.favorites.length === 7, `shell=${d.shell} favourites=${d.favorites.length}`);
 
     await load(`${base}/title.html`);
     await press('ArrowDown');

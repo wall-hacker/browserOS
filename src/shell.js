@@ -234,6 +234,7 @@ function buildShell() {
   input.type = 'text';
   input.spellcheck = false;
   input.autocomplete = 'off';
+  input.readOnly = true; // typed with our keyboard only; read-only keeps the TV's own keyboard away
   sbox.append(h('div', 'search-label'), input);
   search.append(sbox, h('div', 'osk-host'));
 
@@ -468,13 +469,17 @@ function onShellKeyboardKey(action, value) {
   const input = q('.search-input');
   const start = input.selectionStart;
   const end = input.selectionEnd;
+  const edit = (from, to, text) => {
+    input.value = input.value.slice(0, from) + text + input.value.slice(to);
+    input.setSelectionRange(from + text.length, from + text.length);
+  };
   switch (action) {
     case 'char':
-      input.setRangeText(value, start, end, 'end');
+      edit(start, end, value);
       break;
     case 'backspace':
-      if (start !== end) input.setRangeText('', start, end, 'end');
-      else if (start > 0) input.setRangeText('', start - 1, start, 'end');
+      if (start !== end) edit(start, end, '');
+      else if (start > 0) edit(start - 1, start, '');
       break;
     case 'clear':
       input.value = '';
