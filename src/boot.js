@@ -21,6 +21,11 @@ onReady(() => {
   } else if (IS_TOP) {
     ensureUI();
     rememberPage();
+    if (!carrier.hinted) {
+      carrier.hinted = true; // once per TizenBrew session: window.name lives as long as the tab
+      saveCarrier();
+      setTimeout(() => toast('Hold OK for the menu', 3000), 1500);
+    }
   }
 });
 
@@ -29,6 +34,15 @@ requestAnimationFrame(tick);
 function debugRect(r) {
   return r && { left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) };
 }
+
+/** Debugging: what a press in dir would consider from the focused element. */
+window.__browserOSCandidates = (dir) => {
+  const from = S.focused && S.focused.isConnected ? rectOf(S.focused) : null;
+  return collect(activeScope()).map((c) => {
+    const s = from && dir ? score(from, c.r, dir) : null;
+    return { el: describe(c.el), rect: debugRect(c.r), pointer: c.viaPointer, score: s && Math.round(s.total), primary: s && Math.round(s.primary) };
+  }).filter((c) => !dir || c.score !== null).sort((a, b) => a.score - b.score);
+};
 
 // For test/run.js and on-device debugging (TizenBrew's remote DevTools console).
 window.__browserOSDebug = () => {

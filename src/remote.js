@@ -16,15 +16,18 @@ const KEY_CODES = {
 };
 const SHELL_KEYS = { Menu: 1, Home: 1, Address: 1 }; // always handled by the top frame
 const ALWAYS_TAKEN = { Back: 1, Menu: 1, Home: 1, Address: 1 }; // even in "Keys: Site" mode
-const BACK_HOLD_MS = 700;
+const HOLD_MS = 700;
 const IME_DONE = 65376; // the TV's own keyboard: Done / Cancel
 const IME_CANCEL = 65385;
 
 const R = {
   down: {}, // keyCode -> name, for keys currently held
-  sawKeyUp: false,
+  // name -> true once a key-up came for it (some TV keys report press and release
+  // together). Kept for the tab in window.name, so every new page doesn't relearn it.
+  upSeen: Object.assign({}, carrier.upSeen),
   topMode: 'nav', // iframes: the top frame's mode, as announced
-  backTimer: null,
+  holding: null, // 'Enter' | 'Back' while a press might turn into a hold
+  holdTimer: null,
 };
 
 /** The mode that decides which keys this frame takes from the page. */
@@ -53,13 +56,12 @@ function onKeyDown(e) {
   e.stopImmediatePropagation();
   const repeat = e.repeat || R.down[e.keyCode] === name;
   R.down[e.keyCode] = name;
-  if (!IS_TOP && !S.active) post(window.top, { type: 'down', name, repeat, sawKeyUp: R.sawKeyUp });
+  if (!IS_TOP && !S.active) post(window.top, { type: 'down', name, repeat });
   else remoteDown(name, repeat);
 }
 
 function onKeyUp(e) {
   if (!e.isTrusted) return;
-  R.sawKeyUp = true;
   const name = R.down[e.keyCode];
   if (!name) return;
   delete R.down[e.keyCode];
@@ -69,28 +71,41 @@ function onKeyUp(e) {
   else remoteUp(name);
 }
 
-/** A key press in the frame in control. Hold Back for the menu. */
+/**
+ * A key press in the frame in control. Holding OK or Back opens the menu, so those act
+ * on release. Samsung remotes report Back's release right away however long it's held,
+ * so on a TV it's hold OK (or Red) that works. Until a key's release has been seen,
+ * it acts on press: a remote that never reports one must not leave OK dead.
+ */
 function remoteDown(name, repeat) {
   if (IS_TOP && S.shell) return shellDown(name, repeat);
-  if (name === 'Back') {
-    if (repeat) return;
-    if (!R.sawKeyUp) return deliver('Back', false); // can't time a hold without key-ups
-    clearTimeout(R.backTimer);
-    R.backTimer = setTimeout(() => {
-      R.backTimer = null;
-      deliver('Menu', false);
-    }, BACK_HOLD_MS);
-    return;
-  }
-  deliver(name, repeat);
+  const holdable = name === 'Back' || (name === 'Enter' && !S.osk && !S.picker);
+  if (!holdable) return deliver(name, repeat);
+  if (repeat) return;
+  if (!R.upSeen[name]) return deliver(name, false);
+  clearTimeout(R.holdTimer);
+  R.holding = name;
+  R.holdTimer = setTimeout(() => {
+    R.holdTimer = null;
+    R.holding = null;
+    deliver('Menu', false);
+  }, HOLD_MS);
 }
 
 function remoteUp(name) {
+  if (!R.upSeen[name]) {
+    R.upSeen[name] = true;
+    if (IS_TOP) {
+      carrier.upSeen = R.upSeen;
+      saveCarrier();
+    }
+  }
   if (IS_TOP && S.shell) return shellUp(name);
-  if (name === 'Back' && R.backTimer) {
-    clearTimeout(R.backTimer);
-    R.backTimer = null;
-    deliver('Back', false);
+  if (R.holdTimer && R.holding === name) {
+    clearTimeout(R.holdTimer);
+    R.holdTimer = null;
+    R.holding = null;
+    deliver(name, false);
   }
 }
 
@@ -126,10 +141,8 @@ window.addEventListener('message', (e) => {
   if (IS_TOP) {
     switch (m.type) {
       case 'down':
-        R.sawKeyUp = R.sawKeyUp || !!m.sawKeyUp;
         return remoteDown(m.name, m.repeat);
       case 'up':
-        R.sawKeyUp = true;
         return remoteUp(m.name);
       case 'shell-key':
         return topKey(m.name);
@@ -141,7 +154,7 @@ window.addEventListener('message', (e) => {
         if (S.inFrame && e.source === S.inFrame.contentWindow) frameExited();
         return;
       case 'hello':
-        return post(e.source, { type: 'mode', mode: S.shell ? 'shell' : S.mode, passthrough: S.baseMode === 'passthrough' });
+        return post(e.source, modeMessage());
     }
     return;
   }
@@ -149,6 +162,7 @@ window.addEventListener('message', (e) => {
   switch (m.type) {
     case 'mode':
       R.topMode = m.mode || 'nav';
+      Object.assign(R.upSeen, m.upSeen);
       S.baseMode = m.passthrough ? 'passthrough' : 'nav';
       if (!S.osk && !S.picker && !S.typing) S.mode = S.baseMode;
       return;

@@ -19,6 +19,10 @@ const bundle = `// BrowserOS TV ${version} for TizenBrew. Built from src/ by bui
   'use strict';
   // TizenBrew evaluates the module in every new execution context; run once per document.
   if (window.__browserOS) return;
+  // Anti-bot checks (Cloudflare Turnstile, reCAPTCHA, hCaptcha) fail if anything touches
+  // their frame, and sites then refuse to play or log in. Leave them alone.
+  if (/(^|\\.)(challenges\\.cloudflare\\.com|hcaptcha\\.com|recaptcha\\.net)$/.test(location.hostname) ||
+    (/(^|\\.)google\\.com$/.test(location.hostname) && /^\\/recaptcha\\//.test(location.pathname))) return;
   window.__browserOS = true;
 
 ${parts.join('\n')}

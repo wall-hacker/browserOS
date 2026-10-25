@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Layout traps</title>
+<!-- Layouts that tripped spatial navigation on flystream.net, reduced to the essentials. -->
+<style>
+  body { margin: 0; background: #111; color: #eee; font: 16px sans-serif; }
+  a, button { color: #eee; background: #333; border: 0; padding: 10px 16px; text-decoration: none; }
+  /* A full-width fixed header: transparent, but it still takes the clicks under it. */
+  header { position: fixed; top: 0; left: 0; right: 0; height: 70px; display: flex; justify-content: center; align-items: center; z-index: 10; }
+  header a { margin: 0 6px; }
+  .banner { position: absolute; top: 90px; left: 900px; }
+  /* A tall hero whose only button is off to the side, far below the banner. */
+  .hero { height: 800px; position: relative; background: #223; }
+  #play { position: absolute; left: 80px; top: 640px; }
+  .row { display: flex; padding: 30px 40px; }
+  .row a { width: 160px; height: 200px; margin-right: 20px; display: block; }
+  /* A wide spotlight between rows: left/right from it must not jump rows. */
+  #spotlight { display: block; margin: 0 40px; height: 260px; }
+  .pad { height: 900px; }
+</style>
+</head>
+<body>
+<header><a id="nav-home" href="#home">Home</a><a id="nav-movies" href="#movies">Movies</a></header>
+<div class="hero">
+  <a id="banner" class="banner" href="#banner">Watch now</a>
+  <button id="play">PLAY</button>
+</div>
+<div class="row" id="row1"><a id="r1-1" href="#1">1</a><a id="r1-2" href="#2">2</a><a id="r1-3" href="#3">3</a><a id="r1-4" href="#4">4</a><a id="r1-5" href="#5">5</a><a id="r1-6" href="#6">6</a></div>
+<a id="spotlight" href="#spotlight">Spotlight</a>
+<div class="row" id="row2"><a id="r2-1" href="#1">1</a><a id="r2-2" href="#2">2</a><a id="r2-3" href="#3">3</a><a id="r2-4" href="#4">4</a></div>
+<div class="pad"></div>
+</body>
+</html>

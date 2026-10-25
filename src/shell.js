@@ -217,7 +217,7 @@ function buildShell() {
   cont.append(h('div', 'icon'), contText);
   contWrap.append(h('h2', '', 'Continue'), cont);
   home.append(top, pill, contWrap, h('h2', '', 'Your sites'), h('div', 'grid'),
-    h('footer', 'hint', 'OK to open  ·  Hold OK on a site to remove it  ·  Hold Back (or Red) on any page for the menu'));
+    h('footer', 'hint', 'OK to open  ·  Hold OK on a site to remove it  ·  Hold OK (or Red) on any page for the menu'));
 
   const menu = h('section', 'screen s-menu');
   const panel = h('div', 'menu-panel');
@@ -649,7 +649,7 @@ function shellDown(name, repeat) {
   if (repeat) return; // repeats of Back/Menu are the tail of the hold that opened the menu
   switch (name) {
     case 'Enter':
-      if (!R.sawKeyUp) return shellOk(); // no key-ups from this remote: no hold gestures
+      if (!R.upSeen.Enter) return shellOk(); // no release reported for OK yet: no hold gestures
       if (!SH.pressTimer) {
         SH.pressTimer = setTimeout(() => {
           SH.pressTimer = 'fired';

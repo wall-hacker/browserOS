@@ -56,6 +56,8 @@ const S = {
   ring: null,
   ringKey: '',
   ringShown: false,
+  visibleTick: 0,
+  focusedVisible: true,
   toastEl: null,
   toastTimer: null,
   scrubEl: null,
@@ -73,7 +75,11 @@ function setMode(mode) {
 
 /** Frames forward or keep keys depending on the top frame's mode, so tell them. */
 function announceMode() {
-  broadcast(window, { type: 'mode', mode: S.shell ? 'shell' : S.mode, passthrough: S.baseMode === 'passthrough' });
+  broadcast(window, modeMessage());
+}
+
+function modeMessage() {
+  return { type: 'mode', mode: S.shell ? 'shell' : S.mode, passthrough: S.baseMode === 'passthrough', upSeen: R.upSeen };
 }
 
 function restMode() {
@@ -250,7 +256,10 @@ function collect(scope) {
     if (!media && r.width * r.height > (viaPointer ? 0.5 : 0.85) * vw * vh) return;
     if (isDisabled(el)) return;
     if (!isVisible(el)) return;
-    if (!viaPointer && onScreen(r) && !clickPoint(el)) return; // covered by something else
+    // Covered by something else, unless it's a fixed bar that scrolling moves it out from under.
+    if (!viaPointer && onScreen(r) && !clickPoint(el) && !underPinned(el, r)) return;
+    // Off to the side with nothing that scrolls it in (carousels paged by transforms).
+    if ((r.right <= 0 || r.left >= vw) && !scrollerFor(parentOf(el), false, r.left >= vw ? 1 : -1)) return;
     found.set(el, { el, r, viaPointer });
   };
 
@@ -286,6 +295,12 @@ function collect(scope) {
     if (!dup) list.push(c);
   }
   return list;
+}
+
+/** el is hidden behind a fixed/sticky element (a header bar), not behind page content. */
+function underPinned(el, r) {
+  const hit = deepElementFromPoint(clamp(cx(r), 0, innerWidth - 1), clamp(cy(r), 0, innerHeight - 1));
+  return !!hit && !contains(el, hit) && !contains(hit, el) && isPinned(hit) && !isPinned(el);
 }
 
 function pointerTarget(hit, cache) {
@@ -348,6 +363,8 @@ function score(a, b, dir) {
   const overlap = vertical
     ? Math.min(a.right, b.right) - Math.max(a.left, b.left)
     : Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+  // Left/right stay in the row: things that share no height with it are another row.
+  if (!vertical && overlap <= 0) return null;
   const gap = Math.max(0, -overlap);
   const drift = vertical ? Math.abs(cx(a) - cx(b)) : Math.abs(cy(a) - cy(b));
   return { primary, total: primary + gap * 2 + drift * (overlap > 0 ? 0.05 : 0.3) };
@@ -410,15 +427,42 @@ function initialPick(cands, dir) {
   return visible.reduce((a, b) => (rank(b.r) < rank(a.r) ? b : a));
 }
 
+function fullyOnScreen(r) {
+  return r.top >= 0 && r.left >= 0 && r.bottom <= innerHeight && r.right <= innerWidth;
+}
+
+/**
+ * Focus was scrolled out of view and the press heads back into the page (down after the
+ * focused item scrolled off the top, and so on): carry on from the edge it left by, in
+ * its column or row. Fixed headers and bars are skipped: they're not "next".
+ */
+function reenter(dir, from, cands) {
+  const vw = innerWidth;
+  const vh = innerHeight;
+  const edges = {
+    down: from.bottom <= 0 && { left: from.left, right: from.right, top: -1, bottom: 0 },
+    up: from.top >= vh && { left: from.left, right: from.right, top: vh, bottom: vh + 1 },
+    right: from.right <= 0 && { left: -1, right: 0, top: from.top, bottom: from.bottom },
+    left: from.left >= vw && { left: vw, right: vw + 1, top: from.top, bottom: from.bottom },
+  };
+  const edge = edges[dir];
+  if (!edge) return null;
+  edge.width = edge.right - edge.left;
+  edge.height = edge.bottom - edge.top;
+  return findBest(dir, edge, cands.filter((c) => onScreen(c.r) && !isPinned(c.el)), null);
+}
+
 function move(dir) {
   const scope = activeScope();
   let cands = collect(scope);
   if (scope && !cands.length) cands = collect(null);
 
-  const current = S.focused && S.focused.isConnected ? S.focused : null;
-  let from = current ? rectOf(current) : S.lastRect;
+  // A dialog that opened since: start inside it, not from what's behind it.
+  const current = S.focused && S.focused.isConnected && (!scope || contains(scope, S.focused)) && isVisible(S.focused)
+    ? S.focused : null;
+  let from = current ? rectOf(current) : scope ? null : S.lastRect;
   if (!from || !onScreen(from)) {
-    const pick = initialPick(cands, dir);
+    const pick = (from && reenter(dir, from, cands)) || initialPick(cands, dir);
     if (pick) return focusEl(pick.el);
     if (!scrollStep(dir)) bump();
     return;
@@ -445,10 +489,21 @@ function move(dir) {
     }
   }
 
-  const best = findBest(dir, from, cands, current);
+  let best = findBest(dir, from, cands, current);
   const span = dir === 'up' || dir === 'down' ? innerHeight : innerWidth;
+  if (best && current && isPinned(best.el) && !isPinned(current)) {
+    // A fixed header is "above" everything while the page is scrolled. Content comes
+    // first; the header once the page can't scroll any further that way.
+    const ahead = cands.filter((c) => c.el !== current && score(from, c.r, dir) && !isPinned(c.el));
+    const content = findBest(dir, from, ahead, current);
+    if (content && (content.primary <= span * FAR_JUMP || fullyOnScreen(content.r))) best = content;
+    else if (scrollStep(dir)) return;
+  }
   if (best && best.primary <= span * FAR_JUMP) return focusEl(best.el);
-  // Nothing close in that direction (e.g. long text): scroll and let the next press pick up.
+  // The nearest match is far off (a tall hero, long text). Something fully on screen in
+  // that direction, even off to the side, comes first; otherwise scroll toward it.
+  const near = findBest(dir, from, cands.filter((c) => fullyOnScreen(c.r)), current);
+  if (near) return focusEl(near.el);
   if (scrollStep(dir)) return;
   if (best) return focusEl(best.el);
   bump();
@@ -458,6 +513,7 @@ function focusEl(el) {
   const previous = deepActiveElement();
   release();
   S.focused = el;
+  S.focusedVisible = true;
   S.lastRect = rectOf(el);
   S.mouseActive = false;
   ensureUI();
@@ -1421,7 +1477,18 @@ window.addEventListener('mousemove', (e) => {
 
 document.addEventListener('focusin', () => {
   const active = deepActiveElement();
-  if (S.osk || !isTextField(active)) return;
+  if (S.osk || !active) return;
+  if (!isTextField(active)) {
+    // The site moved focus itself (a dialog's default button, its own TV mode): follow it.
+    if (active !== S.focused && active !== document.body && !S.shell && !S.mouseActive && S.mode === 'nav' &&
+      active.matches && active.matches(SELECTOR) && active.tagName !== 'IFRAME' && onScreen(rectOf(active))) {
+      release();
+      S.focused = active;
+      S.focusedVisible = true;
+      S.lastRect = rectOf(active);
+    }
+    return;
+  }
   if (S.mouseActive) {
     S.typing = active;
     restMode();
@@ -1659,6 +1726,10 @@ function tick() {
   if (el && el.isConnected && !S.mouseActive && !S.shell && S.mode !== 'passthrough' && S.mode !== 'frame') {
     r = rectOf(el);
     if (r.width === 0 && r.height === 0) r = null;
+    // Hidden since it was focused (a page swapped to a player)? No ring around nothing.
+    // Checked every few frames: the fallback walks ancestors' styles.
+    if (r && ++S.visibleTick % 8 === 0) S.focusedVisible = isVisible(el);
+    if (r && S.focusedVisible === false) r = null;
   }
   if (!r) {
     if (S.ringShown) {

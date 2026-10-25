@@ -20,9 +20,18 @@ const HOME_URL = 'http://127.0.0.1:8081/browseros/home';
 const PORT = 8090; // the site is on localhost:PORT; players and ads on 127.0.0.1:PORT+1
 const MODERN = process.argv.includes('--modern');
 const SUITE_ARG = process.argv.find((a) => a.startsWith('--suite='));
-const SUITES = SUITE_ARG ? SUITE_ARG.slice(8).split(',') : ['basic', 'shell', 'streaming'];
+const SUITES = SUITE_ARG ? SUITE_ARG.slice(8).split(',') : ['basic', 'layout', 'shell', 'streaming'];
+const arg = (name) => {
+  const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
+  return hit ? hit.slice(name.length + 3) : null;
+};
+// Explore a real site as the TV would see it:
+//   --explore=URL --keys=ArrowDown*3,Enter --shots=DIR [--cookie=name=value]
+const EXPLORE = arg('explore');
+const TIZEN_UA = 'Mozilla/5.0 (SMART-TV; LINUX; Tizen 5.5) AppleWebKit/537.36 (KHTML, like Gecko) 69.0.3497.106.1/5.5 TV Safari/537.36';
 
 const OLD_CHROME = `(function () {
+  if (/challenges\\.cloudflare\\.com|hcaptcha\\.com|recaptcha/.test(location.href)) return; // they notice
   var gone = [[HTMLElement.prototype, 'showPopover'], [HTMLElement.prototype, 'hidePopover'],
     [Element.prototype, 'checkVisibility'], [Element.prototype, 'replaceChildren'],
     [Document.prototype, 'adoptedStyleSheets'], [ShadowRoot.prototype, 'adoptedStyleSheets']];
@@ -86,7 +95,8 @@ function startServers() {
       res.writeHead(200, { 'Content-Type': 'text/html' });
       return res.end('<title>AD</title><h1>Congratulations, you won!</h1>');
     }
-    const dir = url.pathname === '/remote-test.html' ? ELECTRON_TESTS : STREAMING_DIR;
+    const dir = url.pathname === '/remote-test.html' ? ELECTRON_TESTS
+      : url.pathname === '/layout.html' ? path.join(__dirname, 'pages') : STREAMING_DIR;
     const file = path.join(dir, path.normalize(url.pathname === '/' ? '/index.html' : url.pathname));
     if (!file.startsWith(dir) || !fs.existsSync(file)) {
       res.writeHead(404);
@@ -113,7 +123,7 @@ function startServers() {
 async function run() {
   const stopServers = startServers();
   const win = new BrowserWindow({
-    width: 1280, height: 720, useContentSize: true, show: false, backgroundColor: '#000',
+    width: 1280, height: 720, useContentSize: true, show: false, backgroundColor: '#000', enableLargerThanScreen: true,
     webPreferences: { backgroundThrottling: false, partition: 'harness' },
   });
   win.setAlwaysOnTop(true, 'screen-saver');
@@ -123,7 +133,7 @@ async function run() {
   const dbg = wc.debugger;
   dbg.attach('1.3');
   dbg.on('message', (_e, method, params) => {
-    if (method !== 'Runtime.executionContextCreated') return;
+    if (method !== 'Runtime.executionContextCreated' || process.argv.includes('--no-inject')) return;
     const expression = (MODERN ? '' : OLD_CHROME) + BUNDLE;
     dbg.sendCommand('Runtime.evaluate', { expression, contextId: params.context.id }).catch(() => {});
   });
@@ -309,9 +319,16 @@ async function run() {
 
     await load(`${base}/title.html`);
     await press('ArrowDown');
+    d = await debug();
+    const focusedBefore = d.focused;
+    await hold('Enter', 1000);
+    d = await debug();
+    check('page: holding OK opens the menu', d.shell === 'menu', d.shell);
+    check('page: the hold did not also click', /title\.html/.test(wc.getURL()) && focusedBefore, `${wc.getURL()} focused=${focusedBefore}`);
+    await press('Back');
     await hold('Back', 1000);
     d = await debug();
-    check('page: holding Back opens the menu', d.shell === 'menu', d.shell);
+    check('page: holding Back opens the menu too (where the remote reports it)', d.shell === 'menu', d.shell);
     check('page: the hold did not also go back', /title\.html/.test(wc.getURL()), wc.getURL());
     await press('ArrowRight', 7, 200); // back, forward, reload, home, address, smaller, bigger, pin
     d = await debug();
@@ -335,9 +352,11 @@ async function run() {
     d = await debug();
     check('page: the ring still fits when zoomed', ringOn(d), JSON.stringify([d.ringRect, d.focusedRect]));
     info(`zoom correction factor here: ${d.zoomFix}`);
+    await evalIn(null, 'window.name = "fsLegacyTried|" + window.name'); // what flystream.net does
     await load(`${base}/title.html`);
     d = await debug();
     check('page: zoom is remembered for the site', Math.abs(d.zoom - 1.1) < 0.001, String(d.zoom));
+    check('page: a site prefixing window.name keeps the pin', d.carrier.pending.length === 1, JSON.stringify(d.carrier.pending));
     await press('Red');
     await press('ArrowLeft', 9, 150);
     await press('ArrowRight', 5, 150); // "Smaller"
@@ -358,6 +377,36 @@ async function run() {
     await press('Back');
     d = await debug();
     check('page: Back closes it back to the page', !d.shell, d.shell);
+  }
+
+  // -------------------------------------------------------------- layouts from real sites
+
+  async function layout() {
+    await load(`${base}/layout.html`);
+    let d = await pressUntil('ArrowDown', /#banner/, 4);
+    check('layout: down from the header reaches the banner', /#banner/.test(d.focused), d.focused);
+    await press('ArrowDown');
+    d = await debug();
+    check('layout: down from the banner picks the visible button off to the side, not a far card', /#play/.test(d.focused), d.focused);
+    await press('ArrowDown');
+    d = await debug();
+    check('layout: down from the hero reaches the card row', /#r1-/.test(d.focused), d.focused);
+    await press('ArrowDown');
+    d = await debug();
+    check('layout: down reaches the wide spotlight', /#spotlight/.test(d.focused), d.focused);
+    await press('ArrowRight');
+    d = await debug();
+    check('layout: right from the spotlight stays in its row', /#spotlight/.test(d.focused), d.focused);
+    await press('ArrowUp');
+    d = await debug();
+    check('layout: up from the spotlight goes to the row above', /#r1-/.test(d.focused), d.focused);
+    // Far up: a press may scroll first, but it must land on content, never the fixed header.
+    for (let i = 0; i < 3 && !/#play|#banner|#nav-/.test(d.focused); i++) {
+      await press('ArrowUp');
+      d = await debug();
+    }
+    check('layout: up goes back to page content, not to the fixed header', /#play|#banner/.test(d.focused), d.focused);
+    check('layout: it is scrolled out from under the fixed header', d.focusedRect && d.focusedRect.top >= 70, JSON.stringify(d.focusedRect));
   }
 
   // -------------------------------------------------------------- streaming-style site
@@ -488,7 +537,51 @@ async function run() {
     check('embed: page navigation resumes below the player', /Server/.test(d.focused || ''), d.focused);
   }
 
-  const all = { basic, shell, streaming };
+  // -------------------------------------------------------------- explore a real site
+
+  async function explore() {
+    const shots = arg('shots');
+    if (shots) fs.mkdirSync(shots, { recursive: true });
+    const cookie = arg('cookie');
+    if (cookie) {
+      const eq = cookie.indexOf('=');
+      await wc.session.cookies.set({ url: EXPLORE, name: cookie.slice(0, eq), value: cookie.slice(eq + 1) });
+    }
+    wc.setUserAgent(TIZEN_UA);
+    await load(EXPLORE);
+    await wait(Number(arg('wait') || 2500)); // let the site's scripts build the page
+    const steps = (arg('keys') || '').split(',').filter(Boolean);
+    let n = 0;
+    const report = async (label) => {
+      const d = await debug();
+      const r = d.focusedRect;
+      console.log(`${String(n).padStart(2, '0')} ${label.padEnd(12)} ${d.shell ? 'shell:' + d.shell + ' ' + d.shellFocused : (d.mode || '?') + ' ' + d.focused}` +
+        `${r ? `  @${r.left},${r.top} ${r.width}x${r.height}` : ''}  scrollY=${d.scrollY}  ${wc.getURL()}`);
+      if (shots) fs.writeFileSync(path.join(shots, `${String(n).padStart(2, '0')}.png`), (await wc.capturePage()).toPNG());
+      if (process.env.CANDIDATES) {
+        const list = await evalIn(null, `window.__browserOSCandidates(${JSON.stringify(process.env.CANDIDATES)})`);
+        for (const c of (list || []).slice(0, 8)) console.log(`     ${String(c.score).padStart(5)} p=${c.primary} ${c.pointer ? 'ptr' : 'sel'} ${JSON.stringify(c.rect)} ${c.el.replace(/\s+/g, ' ').slice(0, 60)}`);
+      }
+      n++;
+    };
+    await report('start');
+    for (const step of steps) {
+      const m = /^(\w+)(?:\*(\d+))?$/.exec(step);
+      for (let i = 0; i < Number(m[2] || 1); i++) {
+        await press(m[1], 1, 600);
+        await report(m[1]);
+      }
+    }
+  }
+
+  if (EXPLORE) {
+    win.setContentSize(1920, 1080);
+    await explore();
+    stopServers();
+    return app.exit(0);
+  }
+
+  const all = { basic, layout, shell, streaming };
   console.log(MODERN ? 'Modern APIs left in place.' : 'Chromium 69 fallbacks forced (popover, adoptedStyleSheets, checkVisibility removed).');
   try {
     for (const name of SUITES) {

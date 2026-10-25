@@ -1,8 +1,12 @@
-// BrowserOS TV 0.1.1 for TizenBrew. Built from src/ by build.js; don't edit.
+// BrowserOS TV 0.1.2 for TizenBrew. Built from src/ by build.js; don't edit.
 (function () {
   'use strict';
   // TizenBrew evaluates the module in every new execution context; run once per document.
   if (window.__browserOS) return;
+  // Anti-bot checks (Cloudflare Turnstile, reCAPTCHA, hCaptcha) fail if anything touches
+  // their frame, and sites then refuse to play or log in. Leave them alone.
+  if (/(^|\.)(challenges\.cloudflare\.com|hcaptcha\.com|recaptcha\.net)$/.test(location.hostname) ||
+    (/(^|\.)google\.com$/.test(location.hostname) && /^\/recaptcha\//.test(location.pathname))) return;
   window.__browserOS = true;
 
 // ---- compat.js
@@ -381,19 +385,25 @@ function writeJSON(key, value) {
 
 const carrier = loadCarrier();
 
+// Sites write window.name too. Some prepend their own marker to whatever is there
+// (flystream.net adds "fsLegacyTried|"), so ours is found wherever it is and saved
+// after what they put in front of it. A site that replaces the whole name loses it.
+
 function loadCarrier() {
   const empty = { favorites: null, pending: [], last: null };
   if (!IS_TOP) return empty;
   try {
-    if (window.name.indexOf(NAME_PREFIX) === 0) return Object.assign(empty, JSON.parse(window.name.slice(NAME_PREFIX.length)));
-  } catch (e) { /* a site's own window.name */ }
+    const at = window.name.indexOf(NAME_PREFIX);
+    if (at >= 0) return Object.assign(empty, JSON.parse(window.name.slice(at + NAME_PREFIX.length)));
+  } catch (e) { /* not ours, or cut short */ }
   return empty;
 }
 
 function saveCarrier() {
   if (!IS_TOP) return;
   try {
-    window.name = NAME_PREFIX + JSON.stringify(carrier);
+    const at = window.name.indexOf(NAME_PREFIX);
+    window.name = (at > 0 ? window.name.slice(0, at) : '') + NAME_PREFIX + JSON.stringify(carrier);
   } catch (e) { /* ignore */ }
 }
 
@@ -528,6 +538,8 @@ const S = {
   ring: null,
   ringKey: '',
   ringShown: false,
+  visibleTick: 0,
+  focusedVisible: true,
   toastEl: null,
   toastTimer: null,
   scrubEl: null,
@@ -545,7 +557,11 @@ function setMode(mode) {
 
 /** Frames forward or keep keys depending on the top frame's mode, so tell them. */
 function announceMode() {
-  broadcast(window, { type: 'mode', mode: S.shell ? 'shell' : S.mode, passthrough: S.baseMode === 'passthrough' });
+  broadcast(window, modeMessage());
+}
+
+function modeMessage() {
+  return { type: 'mode', mode: S.shell ? 'shell' : S.mode, passthrough: S.baseMode === 'passthrough', upSeen: R.upSeen };
 }
 
 function restMode() {
@@ -722,7 +738,10 @@ function collect(scope) {
     if (!media && r.width * r.height > (viaPointer ? 0.5 : 0.85) * vw * vh) return;
     if (isDisabled(el)) return;
     if (!isVisible(el)) return;
-    if (!viaPointer && onScreen(r) && !clickPoint(el)) return; // covered by something else
+    // Covered by something else, unless it's a fixed bar that scrolling moves it out from under.
+    if (!viaPointer && onScreen(r) && !clickPoint(el) && !underPinned(el, r)) return;
+    // Off to the side with nothing that scrolls it in (carousels paged by transforms).
+    if ((r.right <= 0 || r.left >= vw) && !scrollerFor(parentOf(el), false, r.left >= vw ? 1 : -1)) return;
     found.set(el, { el, r, viaPointer });
   };
 
@@ -758,6 +777,12 @@ function collect(scope) {
     if (!dup) list.push(c);
   }
   return list;
+}
+
+/** el is hidden behind a fixed/sticky element (a header bar), not behind page content. */
+function underPinned(el, r) {
+  const hit = deepElementFromPoint(clamp(cx(r), 0, innerWidth - 1), clamp(cy(r), 0, innerHeight - 1));
+  return !!hit && !contains(el, hit) && !contains(hit, el) && isPinned(hit) && !isPinned(el);
 }
 
 function pointerTarget(hit, cache) {
@@ -820,6 +845,8 @@ function score(a, b, dir) {
   const overlap = vertical
     ? Math.min(a.right, b.right) - Math.max(a.left, b.left)
     : Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+  // Left/right stay in the row: things that share no height with it are another row.
+  if (!vertical && overlap <= 0) return null;
   const gap = Math.max(0, -overlap);
   const drift = vertical ? Math.abs(cx(a) - cx(b)) : Math.abs(cy(a) - cy(b));
   return { primary, total: primary + gap * 2 + drift * (overlap > 0 ? 0.05 : 0.3) };
@@ -882,15 +909,42 @@ function initialPick(cands, dir) {
   return visible.reduce((a, b) => (rank(b.r) < rank(a.r) ? b : a));
 }
 
+function fullyOnScreen(r) {
+  return r.top >= 0 && r.left >= 0 && r.bottom <= innerHeight && r.right <= innerWidth;
+}
+
+/**
+ * Focus was scrolled out of view and the press heads back into the page (down after the
+ * focused item scrolled off the top, and so on): carry on from the edge it left by, in
+ * its column or row. Fixed headers and bars are skipped: they're not "next".
+ */
+function reenter(dir, from, cands) {
+  const vw = innerWidth;
+  const vh = innerHeight;
+  const edges = {
+    down: from.bottom <= 0 && { left: from.left, right: from.right, top: -1, bottom: 0 },
+    up: from.top >= vh && { left: from.left, right: from.right, top: vh, bottom: vh + 1 },
+    right: from.right <= 0 && { left: -1, right: 0, top: from.top, bottom: from.bottom },
+    left: from.left >= vw && { left: vw, right: vw + 1, top: from.top, bottom: from.bottom },
+  };
+  const edge = edges[dir];
+  if (!edge) return null;
+  edge.width = edge.right - edge.left;
+  edge.height = edge.bottom - edge.top;
+  return findBest(dir, edge, cands.filter((c) => onScreen(c.r) && !isPinned(c.el)), null);
+}
+
 function move(dir) {
   const scope = activeScope();
   let cands = collect(scope);
   if (scope && !cands.length) cands = collect(null);
 
-  const current = S.focused && S.focused.isConnected ? S.focused : null;
-  let from = current ? rectOf(current) : S.lastRect;
+  // A dialog that opened since: start inside it, not from what's behind it.
+  const current = S.focused && S.focused.isConnected && (!scope || contains(scope, S.focused)) && isVisible(S.focused)
+    ? S.focused : null;
+  let from = current ? rectOf(current) : scope ? null : S.lastRect;
   if (!from || !onScreen(from)) {
-    const pick = initialPick(cands, dir);
+    const pick = (from && reenter(dir, from, cands)) || initialPick(cands, dir);
     if (pick) return focusEl(pick.el);
     if (!scrollStep(dir)) bump();
     return;
@@ -917,10 +971,21 @@ function move(dir) {
     }
   }
 
-  const best = findBest(dir, from, cands, current);
+  let best = findBest(dir, from, cands, current);
   const span = dir === 'up' || dir === 'down' ? innerHeight : innerWidth;
+  if (best && current && isPinned(best.el) && !isPinned(current)) {
+    // A fixed header is "above" everything while the page is scrolled. Content comes
+    // first; the header once the page can't scroll any further that way.
+    const ahead = cands.filter((c) => c.el !== current && score(from, c.r, dir) && !isPinned(c.el));
+    const content = findBest(dir, from, ahead, current);
+    if (content && (content.primary <= span * FAR_JUMP || fullyOnScreen(content.r))) best = content;
+    else if (scrollStep(dir)) return;
+  }
   if (best && best.primary <= span * FAR_JUMP) return focusEl(best.el);
-  // Nothing close in that direction (e.g. long text): scroll and let the next press pick up.
+  // The nearest match is far off (a tall hero, long text). Something fully on screen in
+  // that direction, even off to the side, comes first; otherwise scroll toward it.
+  const near = findBest(dir, from, cands.filter((c) => fullyOnScreen(c.r)), current);
+  if (near) return focusEl(near.el);
   if (scrollStep(dir)) return;
   if (best) return focusEl(best.el);
   bump();
@@ -930,6 +995,7 @@ function focusEl(el) {
   const previous = deepActiveElement();
   release();
   S.focused = el;
+  S.focusedVisible = true;
   S.lastRect = rectOf(el);
   S.mouseActive = false;
   ensureUI();
@@ -1893,7 +1959,18 @@ window.addEventListener('mousemove', (e) => {
 
 document.addEventListener('focusin', () => {
   const active = deepActiveElement();
-  if (S.osk || !isTextField(active)) return;
+  if (S.osk || !active) return;
+  if (!isTextField(active)) {
+    // The site moved focus itself (a dialog's default button, its own TV mode): follow it.
+    if (active !== S.focused && active !== document.body && !S.shell && !S.mouseActive && S.mode === 'nav' &&
+      active.matches && active.matches(SELECTOR) && active.tagName !== 'IFRAME' && onScreen(rectOf(active))) {
+      release();
+      S.focused = active;
+      S.focusedVisible = true;
+      S.lastRect = rectOf(active);
+    }
+    return;
+  }
   if (S.mouseActive) {
     S.typing = active;
     restMode();
@@ -2131,6 +2208,10 @@ function tick() {
   if (el && el.isConnected && !S.mouseActive && !S.shell && S.mode !== 'passthrough' && S.mode !== 'frame') {
     r = rectOf(el);
     if (r.width === 0 && r.height === 0) r = null;
+    // Hidden since it was focused (a page swapped to a player)? No ring around nothing.
+    // Checked every few frames: the fallback walks ancestors' styles.
+    if (r && ++S.visibleTick % 8 === 0) S.focusedVisible = isVisible(el);
+    if (r && S.focusedVisible === false) r = null;
   }
   if (!r) {
     if (S.ringShown) {
@@ -2374,7 +2455,7 @@ function buildShell() {
   cont.append(h('div', 'icon'), contText);
   contWrap.append(h('h2', '', 'Continue'), cont);
   home.append(top, pill, contWrap, h('h2', '', 'Your sites'), h('div', 'grid'),
-    h('footer', 'hint', 'OK to open  ·  Hold OK on a site to remove it  ·  Hold Back (or Red) on any page for the menu'));
+    h('footer', 'hint', 'OK to open  ·  Hold OK on a site to remove it  ·  Hold OK (or Red) on any page for the menu'));
 
   const menu = h('section', 'screen s-menu');
   const panel = h('div', 'menu-panel');
@@ -2806,7 +2887,7 @@ function shellDown(name, repeat) {
   if (repeat) return; // repeats of Back/Menu are the tail of the hold that opened the menu
   switch (name) {
     case 'Enter':
-      if (!R.sawKeyUp) return shellOk(); // no key-ups from this remote: no hold gestures
+      if (!R.upSeen.Enter) return shellOk(); // no release reported for OK yet: no hold gestures
       if (!SH.pressTimer) {
         SH.pressTimer = setTimeout(() => {
           SH.pressTimer = 'fired';
@@ -2860,15 +2941,18 @@ const KEY_CODES = {
 };
 const SHELL_KEYS = { Menu: 1, Home: 1, Address: 1 }; // always handled by the top frame
 const ALWAYS_TAKEN = { Back: 1, Menu: 1, Home: 1, Address: 1 }; // even in "Keys: Site" mode
-const BACK_HOLD_MS = 700;
+const HOLD_MS = 700;
 const IME_DONE = 65376; // the TV's own keyboard: Done / Cancel
 const IME_CANCEL = 65385;
 
 const R = {
   down: {}, // keyCode -> name, for keys currently held
-  sawKeyUp: false,
+  // name -> true once a key-up came for it (some TV keys report press and release
+  // together). Kept for the tab in window.name, so every new page doesn't relearn it.
+  upSeen: Object.assign({}, carrier.upSeen),
   topMode: 'nav', // iframes: the top frame's mode, as announced
-  backTimer: null,
+  holding: null, // 'Enter' | 'Back' while a press might turn into a hold
+  holdTimer: null,
 };
 
 /** The mode that decides which keys this frame takes from the page. */
@@ -2897,13 +2981,12 @@ function onKeyDown(e) {
   e.stopImmediatePropagation();
   const repeat = e.repeat || R.down[e.keyCode] === name;
   R.down[e.keyCode] = name;
-  if (!IS_TOP && !S.active) post(window.top, { type: 'down', name, repeat, sawKeyUp: R.sawKeyUp });
+  if (!IS_TOP && !S.active) post(window.top, { type: 'down', name, repeat });
   else remoteDown(name, repeat);
 }
 
 function onKeyUp(e) {
   if (!e.isTrusted) return;
-  R.sawKeyUp = true;
   const name = R.down[e.keyCode];
   if (!name) return;
   delete R.down[e.keyCode];
@@ -2913,28 +2996,41 @@ function onKeyUp(e) {
   else remoteUp(name);
 }
 
-/** A key press in the frame in control. Hold Back for the menu. */
+/**
+ * A key press in the frame in control. Holding OK or Back opens the menu, so those act
+ * on release. Samsung remotes report Back's release right away however long it's held,
+ * so on a TV it's hold OK (or Red) that works. Until a key's release has been seen,
+ * it acts on press: a remote that never reports one must not leave OK dead.
+ */
 function remoteDown(name, repeat) {
   if (IS_TOP && S.shell) return shellDown(name, repeat);
-  if (name === 'Back') {
-    if (repeat) return;
-    if (!R.sawKeyUp) return deliver('Back', false); // can't time a hold without key-ups
-    clearTimeout(R.backTimer);
-    R.backTimer = setTimeout(() => {
-      R.backTimer = null;
-      deliver('Menu', false);
-    }, BACK_HOLD_MS);
-    return;
-  }
-  deliver(name, repeat);
+  const holdable = name === 'Back' || (name === 'Enter' && !S.osk && !S.picker);
+  if (!holdable) return deliver(name, repeat);
+  if (repeat) return;
+  if (!R.upSeen[name]) return deliver(name, false);
+  clearTimeout(R.holdTimer);
+  R.holding = name;
+  R.holdTimer = setTimeout(() => {
+    R.holdTimer = null;
+    R.holding = null;
+    deliver('Menu', false);
+  }, HOLD_MS);
 }
 
 function remoteUp(name) {
+  if (!R.upSeen[name]) {
+    R.upSeen[name] = true;
+    if (IS_TOP) {
+      carrier.upSeen = R.upSeen;
+      saveCarrier();
+    }
+  }
   if (IS_TOP && S.shell) return shellUp(name);
-  if (name === 'Back' && R.backTimer) {
-    clearTimeout(R.backTimer);
-    R.backTimer = null;
-    deliver('Back', false);
+  if (R.holdTimer && R.holding === name) {
+    clearTimeout(R.holdTimer);
+    R.holdTimer = null;
+    R.holding = null;
+    deliver(name, false);
   }
 }
 
@@ -2970,10 +3066,8 @@ window.addEventListener('message', (e) => {
   if (IS_TOP) {
     switch (m.type) {
       case 'down':
-        R.sawKeyUp = R.sawKeyUp || !!m.sawKeyUp;
         return remoteDown(m.name, m.repeat);
       case 'up':
-        R.sawKeyUp = true;
         return remoteUp(m.name);
       case 'shell-key':
         return topKey(m.name);
@@ -2985,7 +3079,7 @@ window.addEventListener('message', (e) => {
         if (S.inFrame && e.source === S.inFrame.contentWindow) frameExited();
         return;
       case 'hello':
-        return post(e.source, { type: 'mode', mode: S.shell ? 'shell' : S.mode, passthrough: S.baseMode === 'passthrough' });
+        return post(e.source, modeMessage());
     }
     return;
   }
@@ -2993,6 +3087,7 @@ window.addEventListener('message', (e) => {
   switch (m.type) {
     case 'mode':
       R.topMode = m.mode || 'nav';
+      Object.assign(R.upSeen, m.upSeen);
       S.baseMode = m.passthrough ? 'passthrough' : 'nav';
       if (!S.osk && !S.picker && !S.typing) S.mode = S.baseMode;
       return;
@@ -3038,6 +3133,11 @@ onReady(() => {
   } else if (IS_TOP) {
     ensureUI();
     rememberPage();
+    if (!carrier.hinted) {
+      carrier.hinted = true; // once per TizenBrew session: window.name lives as long as the tab
+      saveCarrier();
+      setTimeout(() => toast('Hold OK for the menu', 3000), 1500);
+    }
   }
 });
 
@@ -3046,6 +3146,15 @@ requestAnimationFrame(tick);
 function debugRect(r) {
   return r && { left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) };
 }
+
+/** Debugging: what a press in dir would consider from the focused element. */
+window.__browserOSCandidates = (dir) => {
+  const from = S.focused && S.focused.isConnected ? rectOf(S.focused) : null;
+  return collect(activeScope()).map((c) => {
+    const s = from && dir ? score(from, c.r, dir) : null;
+    return { el: describe(c.el), rect: debugRect(c.r), pointer: c.viaPointer, score: s && Math.round(s.total), primary: s && Math.round(s.primary) };
+  }).filter((c) => !dir || c.score !== null).sort((a, b) => a.score - b.score);
+};
 
 // For test/run.js and on-device debugging (TizenBrew's remote DevTools console).
 window.__browserOSDebug = () => {

@@ -71,19 +71,25 @@ function writeJSON(key, value) {
 
 const carrier = loadCarrier();
 
+// Sites write window.name too. Some prepend their own marker to whatever is there
+// (flystream.net adds "fsLegacyTried|"), so ours is found wherever it is and saved
+// after what they put in front of it. A site that replaces the whole name loses it.
+
 function loadCarrier() {
   const empty = { favorites: null, pending: [], last: null };
   if (!IS_TOP) return empty;
   try {
-    if (window.name.indexOf(NAME_PREFIX) === 0) return Object.assign(empty, JSON.parse(window.name.slice(NAME_PREFIX.length)));
-  } catch (e) { /* a site's own window.name */ }
+    const at = window.name.indexOf(NAME_PREFIX);
+    if (at >= 0) return Object.assign(empty, JSON.parse(window.name.slice(at + NAME_PREFIX.length)));
+  } catch (e) { /* not ours, or cut short */ }
   return empty;
 }
 
 function saveCarrier() {
   if (!IS_TOP) return;
   try {
-    window.name = NAME_PREFIX + JSON.stringify(carrier);
+    const at = window.name.indexOf(NAME_PREFIX);
+    window.name = (at > 0 ? window.name.slice(0, at) : '') + NAME_PREFIX + JSON.stringify(carrier);
   } catch (e) { /* ignore */ }
 }
 

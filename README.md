@@ -8,6 +8,11 @@ npm run build        # src/ -> dist/browseros.js, checked to parse on Chromium 6
 npm test             # build, then run 71 checks with simulated remote keys
 npm test -- --suite=streaming    # one suite: basic | shell | streaming
 npm test -- --modern             # keep APIs newer than Chromium 69 (default: hidden)
+
+# drive a real site as the TV sees it (Tizen user agent, 1920x1080), one screenshot per key
+npm test -- --explore=https://example.com/ --keys=ArrowDown*5,ArrowRight*2,Enter --shots=out
+#   --cookie=name=value  set a cookie first    --wait=ms  wait before the first key
+#   CANDIDATES=down      also print what Down would consider from each focus
 ```
 
 The tests use the Electron install and test pages from `../browserOS`, so run `npm install` there first.
@@ -40,7 +45,7 @@ Then restart TizenBrew on the TV (it caches the module list until its service re
 | Arrows | Move focus to the nearest item in that direction; scroll when nothing is nearby |
 | OK | Click, open the on-screen keyboard (text fields) or a picker (`<select>`), play/pause (video) |
 | Back | Close the keyboard, picker or dialog, leave fullscreen, go back, or go home |
-| Hold Back, or **Red** | Menu: back, forward, reload, home, address, zoom, pin, key mode, exit |
+| **Hold OK**, or **Red** | Menu: back, forward, reload, home, address, zoom, pin, key mode, exit. (Holding Back works too on keyboards; Samsung remotes report Back's release immediately, so it can't be held there.) |
 | **Green** | Home screen |
 | **Yellow** | Address / search |
 | Play, Pause, ⏯, ⏪, ⏩ | Control the main video, wherever focus is |
@@ -67,10 +72,11 @@ The test harness ([test/harness.js](test/harness.js)) injects the bundle the sam
 ## Known limits
 
 - **Not tested on a real TV yet.** The harness covers the logic and the Chromium 69 fallbacks, but it runs a modern Chromium. Things to check on the TV first:
-  - whether key-ups arrive (the long-press gestures need them; without them, Back acts on key-down and the menu is on Red)
+  - whether OK reports its release (hold OK needs it; a key whose release never arrives acts on press, and the menu stays on Red)
   - CSS zoom, which old Chromium handles differently; the code measures it, and the harness reports `zoom correction factor`
   - whether `tizen.application` exists on remote pages; if not, Exit shows a hint to use the remote's Exit key
 - **The TV's own keyboard** opens for any focused editable field. To keep only ours, a field is read-only while our keyboard edits it. A field a site focuses by itself is either taken over (right after OK) or let go. Rich editors (`contenteditable`) can't be made read-only, so the TV keyboard may still show there; its Done key submits and Cancel closes it.
+- **Anti-bot frames are left alone.** Cloudflare Turnstile, reCAPTCHA and hCaptcha fail when a script runs in their frame. Sites like flystream.net then refuse to play, so the module doesn't run there. If such a check asks for a click, it can't be reached with the remote.
 - **Clicks are synthetic** (`isTrusted: false`). Most sites accept them. Sites that check for trusted events won't react, and `:hover` styles don't show.
 - **Fullscreen and `play()` from forwarded keys.** Chromium 69 grants user activation only to the frame that got the key. Fullscreen or play requested by a different frame may be refused.
 - **No error page** when a site fails to load, and no new windows: pop-ups and new tabs open in place, so sign-in flows that need `window.opener` won't complete.
