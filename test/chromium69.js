@@ -59,6 +59,7 @@ async function main() {
     ws.send(JSON.stringify({ id, method, params }));
   });
   const notes = [];
+  const contexts = new Map(); // id -> context, for reporting state frame by frame
   let pauses = 0;
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
@@ -68,11 +69,18 @@ async function main() {
       return;
     }
     const p = m.params;
-    if (m.method === 'Runtime.executionContextCreated' && inject) {
-      send('Runtime.evaluate', { expression: BUNDLE, contextId: p.context.id }).then((r) => {
-        const ex = r && r.exceptionDetails;
-        if (ex) notes.push(`INJECTION FAILED in ${p.context.origin}: ${(ex.exception && ex.exception.description) || ex.text}`);
-      });
+    if (m.method === 'Runtime.executionContextCreated') {
+      if (p.context.auxData && p.context.auxData.isDefault) contexts.set(p.context.id, p.context);
+      if (inject) {
+        send('Runtime.evaluate', { expression: BUNDLE, contextId: p.context.id }).then((r) => {
+          const ex = r && r.exceptionDetails;
+          if (ex) notes.push(`INJECTION FAILED in ${p.context.origin}: ${(ex.exception && ex.exception.description) || ex.text}`);
+        });
+      }
+    } else if (m.method === 'Runtime.executionContextDestroyed') {
+      contexts.delete(p.executionContextId);
+    } else if (m.method === 'Runtime.executionContextsCleared') {
+      contexts.clear();
     } else if (m.method === 'Debugger.paused') {
       // Nobody resumes under TizenBrew: the page is frozen from here on.
       if (++pauses <= 3) notes.push(`PAUSED (${p.reason}) at ${p.callFrames[0] && p.callFrames[0].url}`);
@@ -95,10 +103,74 @@ async function main() {
   console.log(`${inject ? 'with' : 'without'} BrowserOS${plain ? '' : ', TizenBrew debugger attached'}:`,
     res.result ? JSON.stringify(res.result.value) : 'NO ANSWER (frozen)', `pauses=${pauses}`);
   for (const note of notes.slice(0, 20)) console.log('  ' + note);
-  const shot = opt('shot');
-  if (shot) {
+  notes.length = 0;
+  const shoot = async (file) => {
     const s = await send('Page.captureScreenshot', { format: 'png' });
-    if (s && s.data) fs.writeFileSync(shot, Buffer.from(s.data, 'base64'));
+    if (s && s.data) fs.writeFileSync(file, Buffer.from(s.data, 'base64'));
+  };
+  if (opt('shot')) await shoot(opt('shot'));
+
+  // --steps="eval:JS;;key:ArrowDown*3;;wait:1000;;state;;shot:file.png" drives the page like the
+  // remote does: trusted key events with Tizen key codes (Back = 10009).
+  const KEYS = {
+    ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Enter: 13, Back: 10009,
+    Red: 403, Green: 404, Yellow: 405, PlayPause: 10252, Rewind: 412, FastForward: 417,
+  };
+  const pressKey = async (name) => {
+    const vk = KEYS[name];
+    const key = name === 'Enter' || name.indexOf('Arrow') === 0 ? name : 'Unidentified';
+    await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
+  };
+  const state = async (label) => {
+    const lines = [];
+    for (const ctx of contexts.values()) {
+      const r = await send('Runtime.evaluate', {
+        contextId: ctx.id,
+        returnByValue: true,
+        expression: `(function () {
+          var d = window.__browserOSDebug ? window.__browserOSDebug() : null;
+          var fe = document.fullscreenElement || document.webkitFullscreenElement;
+          var v = document.querySelector('video');
+          return { href: location.href.slice(0, 70), top: window === window.top, d: d && { mode: d.mode, active: d.active,
+            shell: d.shell, focused: d.focused && d.focused.replace(/\\s+/g, ' ').slice(0, 60), keyMs: d.keyMs },
+            fullscreen: fe ? (fe.tagName + (fe.id ? '#' + fe.id : '') + '.' + String(fe.className).split(' ')[0]) : null,
+            video: v && { t: Math.round(v.currentTime), paused: v.paused, w: v.clientWidth } };
+        })()`,
+      });
+      const v = r && r.result && r.result.value;
+      if (!v || (!v.d && !v.video && !v.top)) continue;
+      lines.push(`    ${v.top ? 'top  ' : 'frame'} ${v.href}\n        ${JSON.stringify({ bos: v.d, fullscreen: v.fullscreen, video: v.video })}`);
+    }
+    console.log(`  [${label}]\n${lines.join('\n')}`);
+    // --probe=JS: something site-specific to report with every state, from the top frame.
+    if (opt('probe')) {
+      const r = await send('Runtime.evaluate', { expression: opt('probe'), returnByValue: true });
+      console.log(`    probe: ${JSON.stringify(r && r.result && r.result.value)}`);
+    }
+    for (const note of notes.splice(0)) console.log('    ! ' + note);
+  };
+  for (const step of (opt('steps') || '').split(';;').filter(Boolean)) {
+    const at = step.indexOf(':');
+    const kind = at < 0 ? step : step.slice(0, at);
+    const value = at < 0 ? '' : step.slice(at + 1);
+    if (kind === 'key') {
+      const m = /^(\w+)(?:\*(\d+))?$/.exec(value);
+      for (let i = 0; i < Number(m[2] || 1); i++) {
+        await pressKey(m[1]);
+        await wait(Number(opt('delay') || 700));
+      }
+      await state(value);
+    } else if (kind === 'wait') {
+      await wait(Number(value));
+    } else if (kind === 'eval') {
+      const r = await send('Runtime.evaluate', { expression: value, returnByValue: true, awaitPromise: true });
+      console.log(`  [eval] ${JSON.stringify(r && r.result && r.result.value)}`);
+    } else if (kind === 'state') {
+      await state('state');
+    } else if (kind === 'shot') {
+      await shoot(value);
+    }
   }
 }
 

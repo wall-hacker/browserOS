@@ -417,23 +417,43 @@ async function run() {
 
     // A player whose controls hide when idle, behind a click shield (like flystream.net's).
     await load(`${base}/shielded-player.html`);
-    d = await pressUntil('ArrowDown', /button#play/, 3);
+    const idle = () => evalIn(null, 'player.classList.contains("idle")');
+    await wait(2600);
+    check('player: its controls hid when idle', await idle());
+    await press('ArrowDown');
+    d = await debug();
+    check('player: down reaches the video under its shield, controls hidden', /^video/.test(d.focused || ''), d.focused);
+    await press('ArrowDown', 1, 600);
+    d = await debug();
+    check('player: down from the video wakes the controls and focuses one', /button#play/.test(d.focused || '') && !(await idle()), d.focused);
     d = await pressUntil('ArrowRight', /button#fs/, 3);
     check('player: reaches the fullscreen button', /button#fs/.test(d.focused || ''), d.focused);
     await press('Enter', 1, 900);
-    check('player: the player went fullscreen', await evalIn(null, '!!document.fullscreenElement'));
-    await wait(2600);
-    check('player: its controls hid when idle', await evalIn(null, 'player.classList.contains("idle")'));
-    await press('Enter', 1, 300);
-    check('player: OK in fullscreen brings the controls back', !(await evalIn(null, 'player.classList.contains("idle")')));
-    await wait(2600);
-    await press('ArrowUp', 1, 700);
     d = await debug();
-    check('player: up in fullscreen wakes the controls and focuses one', /button#(play|fs)/.test(d.focused || '') &&
-      !(await evalIn(null, 'player.classList.contains("idle")')), d.focused);
+    check('player: the player went fullscreen', await evalIn(null, '!!document.fullscreenElement'));
+    check('player: focus stays on the control that went fullscreen', /button#fs/.test(d.focused || ''), d.focused);
+    await press('ArrowLeft');
+    d = await debug();
+    check('player: in fullscreen, arrows move along the controls', /button#play/.test(d.focused || ''), d.focused);
+    await wait(2600);
+    check('player: the controls hid again', await idle());
+    await press('ArrowRight');
+    d = await debug();
+    check('player: with them hidden, a key only brings them back', /button#play/.test(d.focused || '') && !(await idle()), d.focused);
+    await press('Back');
+    d = await debug();
+    check('player: Back leaves the controls for plain playback', !d.focused && (await evalIn(null, '!!document.fullscreenElement')), d.focused);
+    const was = await evalIn(null, 'document.querySelector("video").paused');
+    await press('Enter');
+    check('player: OK in plain playback plays/pauses', (await evalIn(null, 'document.querySelector("video").paused')) !== was);
+    await press('ArrowDown', 1, 600);
+    d = await debug();
+    check('player: down goes back to the controls', /button#(play|fs)/.test(d.focused || ''), d.focused);
     await press('Back');
     await press('Back', 1, 800);
-    check('player: Back leaves fullscreen', !(await evalIn(null, '!!document.fullscreenElement')));
+    d = await debug();
+    check('player: Back twice leaves fullscreen', !(await evalIn(null, '!!document.fullscreenElement')));
+    check('player: focus returns to the fullscreen button', /button#fs/.test(d.focused || ''), d.focused);
   }
 
   // -------------------------------------------------------------- streaming-style site
@@ -521,11 +541,14 @@ async function run() {
     await press('Enter', 1, 1000);
     const fullscreen = await evalIn(null, '!!document.fullscreenElement');
     check('watch: fullscreen button works', fullscreen);
+    d = await debug();
+    check('watch: in fullscreen, focus stays on the player\'s controls', /button\.fs/.test(d.focused || ''), d.focused);
+    await press('Back'); // leave the controls: plain playback
     const t2 = await videoTime();
     await press('ArrowRight', 2, 150);
     await wait(1100);
     const t3 = await videoTime();
-    check('watch: in fullscreen, right scrubs directly', t3 - t2 > 15 && t3 - t2 < 26, `${t2.toFixed(1)} -> ${t3.toFixed(1)}`);
+    check('watch: in fullscreen plain playback, right scrubs', t3 - t2 > 15 && t3 - t2 < 26, `${t2.toFixed(1)} -> ${t3.toFixed(1)}`);
     await press('ArrowUp', 1, 700);
     d = await debug();
     check('watch: up in fullscreen reaches the player controls', /button|progress|vol|time/.test(d.focused || ''), d.focused);

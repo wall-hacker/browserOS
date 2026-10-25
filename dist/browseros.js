@@ -1,4 +1,4 @@
-// BrowserOS TV 0.1.4 for TizenBrew. Built from src/ by build.js; don't edit.
+// BrowserOS TV 0.1.5 for TizenBrew. Built from src/ by build.js; don't edit.
 (function () {
   'use strict';
   // TizenBrew evaluates the module in every new execution context; run once per document.
@@ -132,7 +132,10 @@ function chainHas(el, cache, test, maxDepth) {
 
 /** fresh: don't use (or fill) the per-key-press cache, for checks made between presses. */
 function isVisible(el, fresh) {
-  if (el.checkVisibility) return el.checkVisibility({ checkVisibilityCSS: true, visibilityProperty: true });
+  if (el.checkVisibility) {
+    // Opacity only counts when asked for (both spellings, old and new).
+    return el.checkVisibility({ checkVisibilityCSS: true, visibilityProperty: true, opacityProperty: true, checkOpacity: true });
+  }
   if (getComputedStyle(el).visibility === 'hidden') return false;
   return !chainHas(el, fresh ? new Map() : styleCache.faded, (s) => s.opacity === '0', 12);
 }
@@ -792,9 +795,11 @@ function collect(scope, area) {
     if (isDisabled(el)) return;
     if (scope && !contains(scope, el)) return;
     if (!isVisible(el)) return; // cached styles: cheaper than the hit tests below
-    // Covered by something else, unless it's a fixed bar that scrolling moves it out from under.
+    // Covered by something else, unless it's a fixed bar that scrolling moves it out from
+    // under, or a video's own player drawn over it (a click shield, hidden controls).
     S.coverHit = undefined;
-    if (!viaPointer && onScreen(r) && !clickPoint(el, r) && !underPinned(el, r)) return;
+    if (!viaPointer && onScreen(r) && !clickPoint(el, r) && !underPinned(el, r) &&
+      !(el.tagName === 'VIDEO' && ownOverlay(el))) return;
     // Off to the side with nothing that scrolls it in (carousels paged by transforms).
     if ((r.right <= 0 || r.left >= vw) && !scrollerFor(parentOf(el), false, r.left >= vw ? 1 : -1)) return;
     found.set(el, { el, r, viaPointer });
@@ -846,6 +851,18 @@ function collect(scope, area) {
     if (!dup) list.push(c);
   }
   return list;
+}
+
+/** What covers this video (clickPoint's centre hit) belongs to its player: the wrapper around it. */
+function ownOverlay(video) {
+  const hit = S.coverHit;
+  if (!hit) return false;
+  let n = parentOf(video);
+  for (let depth = 0; n && depth < 6 && n !== document.body; depth++, n = parentOf(n)) {
+    if (!playerWide(box(n), video)) return false;
+    if (contains(n, hit)) return true;
+  }
+  return false;
 }
 
 /** el is hidden behind a fixed/sticky element (a header bar), not behind page content. */
@@ -966,6 +983,28 @@ function playerVideoOf(el) {
   return null;
 }
 
+/** The outermost element wrapped tightly around a video: its player. */
+function playerRoot(video) {
+  let root = null;
+  let n = parentOf(video);
+  for (let depth = 0; n && depth < 6 && n !== document.body; depth++, n = parentOf(n)) {
+    if (!playerWide(box(n), video)) break;
+    root = n;
+  }
+  return root;
+}
+
+/** Wakes a player and focuses a control once they've appeared (controls usually sit along the bottom). */
+function focusControlsSoon(video, root) {
+  wakePlayer(video);
+  setTimeout(() => {
+    resetStyleCache(); // they were hidden when this key press started
+    const controls = collect(root).filter((c) => c.el !== video && !contains(c.el, video));
+    const pick = initialPick(controls, 'up');
+    if (pick) focusEl(pick.el);
+  }, 150);
+}
+
 /** The player around a video: its box and the controls in it. */
 function playerOf(video, cands) {
   let n = parentOf(video);
@@ -1055,6 +1094,13 @@ function move(dir) {
       if (dir === 'down') {
         wakePlayer(video);
         if (player.controls.length) return focusEl(initialPick(player.controls, 'up').el);
+        // Hidden while idle: they show after the wake-up, so focus one then. A player
+        // with no controls of its own lets the next press move on below it.
+        if (S.wokeVideo !== video || performance.now() - S.wokeAt > 1500) {
+          S.wokeVideo = video;
+          S.wokeAt = performance.now();
+          return focusControlsSoon(video, playerRoot(video));
+        }
       }
     } else {
       const inside = findBest(dir, from, player.controls, current);
@@ -1109,7 +1155,9 @@ function focusEl(el) {
   if (wantsHover(el)) {
     const token = ++S.hoverToken;
     setTimeout(() => {
-      if (token === S.hoverToken && S.focused === el) hover(el);
+      if (token !== S.hoverToken || S.focused !== el) return;
+      if (el.tagName === 'VIDEO') wakePlayer(el); // its own player usually covers it
+      else hover(el);
     }, 30);
   }
   raiseOverlay();
@@ -1572,7 +1620,9 @@ function playerKey(key) {
   const root = ctx.root;
   const video = ctx.video;
   wakePlayer(video); // any key shows the player's controls, as a mouse move would
-  const inControls = S.focused && S.focused !== video && S.focused.isConnected && (!root || contains(root, S.focused));
+  // (A focused player box, which the site may focus itself, isn't a control.)
+  const inControls = S.focused && S.focused !== video && !contains(S.focused, video) && S.focused.isConnected &&
+    (!root || contains(root, S.focused));
   if (inControls) return false;
   switch (key) {
     case 'ArrowLeft':
@@ -1584,16 +1634,10 @@ function playerKey(key) {
       else togglePlay(video);
       return true;
     case 'ArrowUp':
-    case 'ArrowDown': {
+    case 'ArrowDown':
       commitScrub();
-      setTimeout(() => {
-        resetStyleCache(); // the controls were hidden when this key press started
-        const controls = collect(root).filter((c) => c.el !== video && !contains(c.el, video));
-        const pick = initialPick(controls, 'up'); // controls usually sit along the bottom
-        if (pick) focusEl(pick.el);
-      }, 150);
+      focusControlsSoon(video, root);
       return true;
-    }
     default:
       return false;
   }
@@ -1709,7 +1753,11 @@ function back() {
   if (fe && !(fe instanceof HTMLIFrameElement)) {
     const hasVideo = fe instanceof HTMLVideoElement || !!fe.querySelector('video');
     if (hasVideo && S.focused && S.focused.tagName !== 'VIDEO' && contains(fe, S.focused)) {
-      S.focused = null; // leave the controls, back to plain playback
+      // Leave the controls, back to plain playback. Drop the page's focus as well, or a
+      // site's own highlight (flystream's TV mode) stays on the control.
+      const active = deepActiveElement();
+      if (active && active !== document.body && contains(fe, active)) active.blur();
+      S.focused = null;
       return;
     }
     leaveFullscreen();
@@ -2054,6 +2102,13 @@ function handleKey(key, repeat) {
     return;
   }
   if (key === 'Back') return back();
+  // A player's controls hide when idle with focus still on one: the first key only
+  // brings them back (as on TV apps), instead of navigating away from an invisible control.
+  const shownBy = S.focused && S.focused.isConnected && S.focused.tagName !== 'VIDEO' && playerVideoOf(S.focused);
+  if (shownBy && !isVisible(S.focused, true)) {
+    wakePlayer(shownBy);
+    return;
+  }
   if (S.engaged && engagedKey(key)) return;
   if (S.scrub && key === 'Enter') return commitScrub();
   if (playerKey(key)) return;
@@ -2083,8 +2138,12 @@ document.addEventListener('focusin', () => {
   if (S.osk || !active) return;
   if (!isTextField(active)) {
     // The site moved focus itself (a dialog's default button, its own TV mode): follow it.
+    // Not a whole player or page section, though (flystream focuses its player box):
+    // arrows find nothing from something the size of the screen.
+    const r = rectOf(active);
     if (active !== S.focused && active !== document.body && !S.shell && !S.mouseActive && S.mode === 'nav' &&
-      active.matches && active.matches(SELECTOR) && active.tagName !== 'IFRAME' && onScreen(rectOf(active))) {
+      active.matches && active.matches(SELECTOR) && active.tagName !== 'IFRAME' && onScreen(r) &&
+      r.width * r.height < 0.5 * innerWidth * innerHeight && !active.querySelector('video')) {
       release();
       S.focused = active;
       S.focusedVisible = true;
@@ -2119,7 +2178,19 @@ document.addEventListener('focusout', () => {
 
 onFullscreenChange(() => {
   const fe = fullscreenEl();
-  if (fe) S.focused = null; // start in plain playback
+  if (fe) {
+    // Focus on one of the player's own controls (its fullscreen button) stays, so the
+    // arrows move along the controls the viewer is looking at. Otherwise plain playback:
+    // left/right scrub, OK plays/pauses, down reaches the controls.
+    S.beforeFullscreen = S.focused;
+    const onControl = S.focused && S.focused.isConnected && S.focused.tagName !== 'VIDEO' && contains(fe, S.focused);
+    if (!onControl) S.focused = null;
+  } else if (!S.focused || !S.focused.isConnected || !isVisible(S.focused, true)) {
+    // Back where focus was before fullscreen (the fullscreen button), not nowhere.
+    const back = S.beforeFullscreen;
+    S.focused = back && back.isConnected && isVisible(back, true) ? back : null;
+    if (S.focused) S.lastRect = rectOf(S.focused);
+  }
   // A player iframe going fullscreen takes the remote with it.
   if (!IS_TOP && fe && !S.active) {
     S.active = true;

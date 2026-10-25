@@ -102,7 +102,10 @@ function chainHas(el, cache, test, maxDepth) {
 
 /** fresh: don't use (or fill) the per-key-press cache, for checks made between presses. */
 function isVisible(el, fresh) {
-  if (el.checkVisibility) return el.checkVisibility({ checkVisibilityCSS: true, visibilityProperty: true });
+  if (el.checkVisibility) {
+    // Opacity only counts when asked for (both spellings, old and new).
+    return el.checkVisibility({ checkVisibilityCSS: true, visibilityProperty: true, opacityProperty: true, checkOpacity: true });
+  }
   if (getComputedStyle(el).visibility === 'hidden') return false;
   return !chainHas(el, fresh ? new Map() : styleCache.faded, (s) => s.opacity === '0', 12);
 }
