@@ -18,10 +18,20 @@ The tests use the Electron install and test pages from `../browserOS`, so run `n
 2. **Install TizenBrew** with the TizenBrew Installer or Tizen Studio. The steps are in the [TizenBrew README](https://github.com/reisxd/TizenBrew).
 3. **Publish this module** so TizenBrew can download it. TizenBrew loads modules through jsDelivr, so either:
    - publish to npm (`npm publish`), and the module name is `npm/browseros-tv`, or
-   - push this folder to GitHub **with `dist/` committed**, and the module name is `gh/<user>/<repo>`.
+   - push this folder to a **public** GitHub repo **with `dist/` committed and a version tag** (e.g. `v0.1.0`), and the module name is `gh/<user>/<repo>`. Without a version in the name, jsDelivr serves the latest tag; a repo with no tags makes TizenBrew show "Unknown module".
 4. **Add the module.** In TizenBrew, open the Module Manager, add the module name, and launch **BrowserOS TV**. You can make it auto-launch from there too.
 
-jsDelivr caches files for hours. After you publish a fix, bump `version` (npm) or add a tag (GitHub) so the TV gets the new script.
+This module is published as `gh/wall-hacker/browserOS`. To release an update:
+
+```
+npm run build
+# bump "version" in package.json, commit, then:
+git tag v0.1.1 && git push origin main v0.1.1
+curl https://purge.jsdelivr.net/gh/wall-hacker/browserOS/package.json
+curl https://purge.jsdelivr.net/gh/wall-hacker/browserOS/dist/browseros.js
+```
+
+Then restart TizenBrew on the TV (it caches the module list until its service restarts).
 
 ## Remote keys
 
