@@ -34,8 +34,22 @@ const OLD_CHROME = `(function () {
   if (/challenges\\.cloudflare\\.com|hcaptcha\\.com|recaptcha/.test(location.href)) return; // they notice
   var gone = [[HTMLElement.prototype, 'showPopover'], [HTMLElement.prototype, 'hidePopover'],
     [Element.prototype, 'checkVisibility'], [Element.prototype, 'replaceChildren'],
-    [Document.prototype, 'adoptedStyleSheets'], [ShadowRoot.prototype, 'adoptedStyleSheets']];
+    [Document.prototype, 'adoptedStyleSheets'], [ShadowRoot.prototype, 'adoptedStyleSheets'],
+    [Element.prototype, 'requestFullscreen'], [Document.prototype, 'exitFullscreen'],
+    [Document.prototype, 'fullscreenElement'], [Document.prototype, 'onfullscreenchange']];
   gone.forEach(function (g) { try { delete g[0][g[1]]; } catch (e) {} });
+  // Only webkitRequestFullscreen is left, and like on a TV it takes longer than a frame.
+  // Chromium 69's rules: while something is fullscreen, only an element inside it may go
+  // fullscreen; anything else is refused (newer engines let it replace the old one).
+  var webkitRequest = Element.prototype.webkitRequestFullscreen;
+  Element.prototype.webkitRequestFullscreen = function () {
+    var el = this;
+    setTimeout(function () {
+      var current = document.webkitFullscreenElement;
+      if (current && !current.contains(el)) return document.dispatchEvent(new Event('webkitfullscreenerror'));
+      webkitRequest.call(el);
+    }, 150);
+  };
 })();`;
 
 const KEYS = {
@@ -430,7 +444,10 @@ async function run() {
     check('player: reaches the fullscreen button', /button#fs/.test(d.focused || ''), d.focused);
     await press('Enter', 1, 900);
     d = await debug();
-    check('player: the player went fullscreen', await evalIn(null, '!!document.fullscreenElement'));
+    const fs = await evalIn(null,
+      '(function () { var fe = document.fullscreenElement || document.webkitFullscreenElement; return [fe && fe.id, window.nativeFallbacks || 0]; })()');
+    check('player: the player went fullscreen, not just its <video>', fs[0] === 'player' && fs[1] === 0,
+      `fullscreen=${fs[0]} native video fallbacks=${fs[1]}`);
     check('player: focus stays on the control that went fullscreen', /button#fs/.test(d.focused || ''), d.focused);
     await press('ArrowLeft');
     d = await debug();

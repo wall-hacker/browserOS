@@ -1,4 +1,4 @@
-// BrowserOS TV 0.1.5 for TizenBrew. Built from src/ by build.js; don't edit.
+// BrowserOS TV 0.1.6 for TizenBrew. Built from src/ by build.js; don't edit.
 (function () {
   'use strict';
   // TizenBrew evaluates the module in every new execution context; run once per document.
@@ -63,6 +63,60 @@ function addStyles(root, css) {
   style.textContent = css;
   root.appendChild(style);
 }
+
+/**
+ * Unprefixed, promise-returning fullscreen for Chromium 69, which only has the webkit
+ * methods, and those return nothing. Players then check on the next frame whether
+ * fullscreen started; on a TV it takes longer, so they give up and fall back to native
+ * <video> fullscreen, which shows none of their controls and nothing brings them back
+ * (flystream.net). With a promise they wait for the real outcome.
+ */
+(function fullscreenPolyfill() {
+  const proto = Element.prototype;
+  if (proto.requestFullscreen || !proto.webkitRequestFullscreen) return;
+  const settle = (resolve, reject) => {
+    const done = (ok) => {
+      document.removeEventListener('webkitfullscreenchange', onChange);
+      document.removeEventListener('webkitfullscreenerror', onError);
+      if (ok) resolve();
+      else reject(new TypeError('Fullscreen request denied'));
+    };
+    const onChange = () => done(true);
+    const onError = () => done(false);
+    document.addEventListener('webkitfullscreenchange', onChange);
+    document.addEventListener('webkitfullscreenerror', onError);
+  };
+  proto.requestFullscreen = function () {
+    const el = this;
+    return new Promise((resolve, reject) => {
+      settle(resolve, reject);
+      el.webkitRequestFullscreen();
+    });
+  };
+  if (!document.exitFullscreen && document.webkitExitFullscreen) {
+    Document.prototype.exitFullscreen = function () {
+      const doc = this;
+      return new Promise((resolve, reject) => {
+        if (!doc.webkitFullscreenElement) return resolve();
+        settle(resolve, reject);
+        doc.webkitExitFullscreen();
+      });
+    };
+  }
+  if (!('fullscreenElement' in document)) {
+    Object.defineProperty(Document.prototype, 'fullscreenElement', {
+      configurable: true,
+      get() { return this.webkitFullscreenElement || null; },
+    });
+  }
+  // Pages that now take the unprefixed path listen for the unprefixed events too.
+  document.addEventListener('webkitfullscreenchange', (e) => {
+    e.target.dispatchEvent(new Event('fullscreenchange', { bubbles: true }));
+  }, true);
+  document.addEventListener('webkitfullscreenerror', (e) => {
+    e.target.dispatchEvent(new Event('fullscreenerror', { bubbles: true }));
+  }, true);
+})();
 
 function fullscreenEl() {
   return document.fullscreenElement || document.webkitFullscreenElement || null;

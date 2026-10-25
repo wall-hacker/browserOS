@@ -39,9 +39,20 @@
   player.addEventListener('mousemove', wake);
   wake();
   document.getElementById('play').addEventListener('click', function () { video.paused ? video.play() : video.pause(); });
+  // flystream.net's toggleFullscreen: when the request returns no promise (Chromium 69),
+  // it checks on the next frame and otherwise falls back to native <video> fullscreen,
+  // which shows none of the player's controls.
   document.getElementById('fs').addEventListener('click', function () {
+    var current = document.fullscreenElement || document.webkitFullscreenElement;
+    if (current) return (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    var native = function () {
+      window.nativeFallbacks = (window.nativeFallbacks || 0) + 1;
+      if (video.webkitEnterFullscreen) video.webkitEnterFullscreen();
+    };
     var req = player.requestFullscreen || player.webkitRequestFullscreen;
-    req.call(player);
+    var pending = req.call(player);
+    if (pending && pending.catch) pending.catch(native);
+    else requestAnimationFrame(function () { (document.fullscreenElement || document.webkitFullscreenElement) || native(); });
   });
 </script>
 </body>

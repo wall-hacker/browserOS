@@ -18,7 +18,25 @@ const os = require('os');
 const path = require('path');
 
 const CHROME = process.env.CHROME69 || path.join(__dirname, '.chromium69', 'chrome-win32', 'chrome.exe');
-const BUNDLE = fs.readFileSync(path.join(__dirname, '..', 'dist', 'browseros.js'), 'utf8');
+// --old-apis: with a newer Chrome, hide what Chromium 69 doesn't have, so BrowserOS takes
+// the code paths it takes on the TV (no popover top layer, prefixed fullscreen, ...).
+const OLD_APIS = `(function () {
+  if (/challenges\\.cloudflare\\.com|hcaptcha\\.com|recaptcha/.test(location.href)) return;
+  // Only what BrowserOS has fallbacks for and sites cope without (sites use replaceChildren).
+  [[HTMLElement.prototype, 'showPopover'], [HTMLElement.prototype, 'hidePopover'],
+    [Element.prototype, 'checkVisibility'],
+    [Document.prototype, 'onfullscreenchange'], [Document.prototype, 'fullscreenElement'],
+    [Element.prototype, 'requestFullscreen'], [Document.prototype, 'exitFullscreen'],
+  ].forEach(function (g) { try { delete g[0][g[1]]; } catch (e) {} });
+  ${process.argv.includes('--slow-fullscreen') ? `
+  // A TV takes a while to enter fullscreen: delay it past the next animation frame.
+  var webkitRequest = Element.prototype.webkitRequestFullscreen;
+  Element.prototype.webkitRequestFullscreen = function () { var el = this; setTimeout(function () { webkitRequest.call(el); }, 150); };
+  var native = HTMLVideoElement.prototype.webkitEnterFullscreen;
+  HTMLVideoElement.prototype.webkitEnterFullscreen = function () { window.__nativeFullscreenCalls = (window.__nativeFullscreenCalls || 0) + 1; return native && native.call(this); };` : ''}
+})();`;
+const BUNDLE = (process.argv.includes('--old-apis') ? OLD_APIS : '') +
+  fs.readFileSync(path.join(__dirname, '..', 'dist', 'browseros.js'), 'utf8');
 const UA = 'Mozilla/5.0 (SMART-TV; LINUX; Tizen 5.5) AppleWebKit/537.36 (KHTML, like Gecko) 69.0.3497.106.1/5.5 TV Safari/537.36';
 const url = process.argv[2];
 const inject = process.argv.includes('--inject');
